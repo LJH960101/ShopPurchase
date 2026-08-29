@@ -13,6 +13,35 @@
 타입, 타이밍 휠, lock-free 객체 직렬화 프리미티브를 실제(비록 흉내낸) 기능으로 직접 돌려보고,
 눈으로 검토하는 대신 동시성 스트레스 테스트로 검증했습니다.
 
+**`Core/`, `Core/Thread/`가 이 프로젝트의 진짜 핵심(동시성 엔진)이고, 나머지(`Network/`,
+`Platform/`, `DB/`, `Data/`, `Object/`, `PacketHandler/`)는 그 엔진을 실제로 돌려보기 위한
+최소한의 배선입니다.** 완성된 서버를 보여주려는 게 아니라 코드 스타일과 설계 판단을 보여주려는
+목적이라, 시간이 없다면 아래 "핵심만 빠르게 보려면"만 봐도 충분합니다.
+
+## 핵심만 빠르게 보려면
+
+시간이 없다면 이 4곳만 봐도 충분합니다:
+
+1. [`Core/Thread/JHSerializedObject.cs`의 `PostCore`(105번째 줄)](Core/Thread/JHSerializedObject.cs#L105) —
+   CAS 재시도 루프 + `ContinueWith` 조합이 왜 위험한지, `Interlocked.Exchange`로 어떻게
+   해결했는지
+2. [`Core/Thread/JHTimingWheel.cs`의 클래스 상단 주석](Core/Thread/JHTimingWheel.cs#L34) —
+   lock-free로 만들었다가 되돌린 이유 (정합성 vs 성능 트레이드오프 판단)
+3. [`Core/JHGUIDGenerator.cs`의 `Next()`(70번째 줄)](Core/JHGUIDGenerator.cs#L70) —
+   Sequence를 왜 wraparound가 아니라 ms 전환 기준으로 리셋해야 하는지
+4. [`DB/DBManager.cs`의 `InsertShopReceipt`(50번째 줄)](DB/DBManager.cs#L50) —
+   왜 트랜잭션 전체가 "하나의 비동기 콜백"이어야 하는지
+
+**보너스: 테스트가 실제로 버그를 잡은 사례**
+
+- [`Test/JHSerializedObjectTest.cs`](Test/JHSerializedObjectTest.cs) — 위 1번의 CAS +
+  `ContinueWith` 버그를 실제로 잡아낸 스트레스 테스트(객체 4개 × 스레드 50개 × 무작위 호출
+  5만 회).
+- [`Test/MultiKeyScheduleTest.cs`](Test/MultiKeyScheduleTest.cs) — `JHTimingWheel`의 다중 key
+  락(lock striping)에서, 진짜 상호 배제를 보장 못 하던 예전의 허술한 "한 번만 실행" 가드를
+  잡아낸 테스트. 이 다중 key API는 실제 구매 흐름에서는 안 쓰이고 `BulkGrantTest`에서만
+  예시로 쓰이는 저수준 프리미티브다.
+
 ## 아키텍처
 
 ```
