@@ -145,6 +145,38 @@ dotnet run
 | `MultiKeyScheduleTest` | 무작위 다중 key `Schedule()` 작업 300개로 정확히 한 번만 실행되는지, key를 공유하는 작업끼리 절대 겹치지 않는지 검증(예전에 진짜 상호 배제를 보장 못 하던 "한 번만 실행" 가드의 버그를 잡아낸 테스트). |
 | `JHSerializedObjectTest` | 객체 4개 × 스레드 50개 × 무작위 `Post`/`Reserve` 호출 250회(총 5만 회): 겹치는 실행 0건, 유실된 콜백 0건(위에서 설명한 CAS + `ContinueWith` 버그를 잡아낸 테스트). |
 
+### 실행 예시
+
+`dotnet run`을 실제로 돌렸을 때 나오는 출력 일부(발췌, 타임스탬프/GUID 일부 생략):
+
+```
+=== BuyTest: 상점 구매 5회 실행 ===
+[Send -> ...136444417] P2C_ResultShopBuy(ErrorCode=ReceiptVerifyFailed, Item=[null])
+[Send -> ...136411649] P2C_ResultShopBuy(ErrorCode=Success, Item=[Items=[ItemId=1002, Count=1], Currencies=[Gold=3000]])
+[Send -> ...136428033] P2C_ResultShopBuy(ErrorCode=ReceiptAlreadyInserted, Item=[null])
+=== BuyTest 완료 ===
+
+=== BulkGrantTest: tight loop로 직접 호출 (나쁜 예) ===
+생성 개수: 30000, 유일 개수: 30000, 중복 개수: 0 (0.00%)
+실제 경과 시간: 406.90ms, 실제로 쓰인 서로 다른 Time 값 개수: 30
+=== BulkGrantTest: JHTimingWheel로 유저별 Job 분산 (좋은 예) ===
+생성 개수: 30000, 유일 개수: 30000, 중복 개수: 0 (0.00%)
+실제 경과 시간: 543.25ms, 실제로 쓰인 서로 다른 Time 값 개수: 40
+
+=== MultiKeyScheduleTest: 겹치는 key 동시 실행 방지 검증 ===
+PASS: 300개 작업 모두 겹치는 key끼리 동시 실행되지 않음
+
+=== JHSerializedObjectTest: Post/Reserve lock-free 직렬화 극한 검증 ===
+총 요청: 50000, 총 완료: 50000, 경과: 61ms
+PASS: 극한 경합 상황에서도 직렬화 유지, 콜백 유실 없음
+```
+
+`BulkGrantTest`에서 좋은 예가 tight loop보다 실행 시간이 더 걸린 게(407ms vs 543ms) 눈에 띌 수
+있는데, 이건 오히려 의도한 결과입니다 — "서로 다른 Time 값 개수"를 보면 tight loop는 30개 ms에
+몰아넣은 반면 분산 처리는 40개 ms에 걸쳐 퍼졌습니다. 시간이 더 걸리더라도 실제 서비스 환경(짧은
+호출 하나가 아니라 진짜 요청 30,000개가 쏟아지는 상황)에서는 Sequence 소진으로 인한 대기가
+아니라 자연스러운 분산이 일어난다는 걸 보여주는 것이 이 테스트의 목적입니다.
+
 ## 알려진 한계
 
 포트폴리오/데모 목적의 프로젝트이며 프로덕션 코드가 아닙니다:
