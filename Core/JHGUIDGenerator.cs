@@ -97,7 +97,15 @@ namespace ShopPurchase.Core
                 }
 
                 if (newTimestamp > m_MaxTime)
-                    throw new InvalidOperationException("JHGUIDGenerator의 Time 비트 공간을 초과했습니다.");
+                {
+                    // GUID 유일성 보장이 근본적으로 깨진 상태다 — EErrorCode/예외로 넘겨서 그냥
+                    // 계속 돌게 두면 안 되고, 심각한 서버 장애로 기록하고 프로세스를 즉시 죽여야
+                    // 한다. Environment.FailFast는 어떤 catch(Exception)도 가로챌 수 없이
+                    // 프로세스를 바로 종료시킨다.
+                    string message = "[FATAL] JHGUIDGenerator의 Time 비트 공간을 초과했습니다. GUID 유일성을 더 이상 보장할 수 없어 서버를 즉시 종료합니다.";
+                    Environment.FailFast(message);
+                    throw new InvalidOperationException(message); // FailFast가 이미 프로세스를 종료시켜 도달하지 않는다.
+                }
 
                 m_lastTimestamp = newTimestamp;
                 m_sequence = newSequence;
@@ -108,7 +116,9 @@ namespace ShopPurchase.Core
 
         // 정상적인 "같은 ms에 1024개 몰림"은 보통 1ms 안에 풀린다. 이 값보다 더 오래 기다려야 한다면
         // 부하 때문이 아니라 시스템 시계가 실제로 뒤로 튄 것(NTP 스텝 보정, VM 일시정지/재개, 수동 조정
-        // 등)으로 보고, 무한정 lock을 잡은 채 멈추는 대신 즉시 실패시킨다.
+        // 등)으로 보고, 무한정 lock을 잡은 채 멈추는 대신 즉시 프로세스를 종료시킨다 — 시계가 이 정도로
+        // 뒤로 튀었다는 건 GUID 유일성 보장이 이미 깨졌을 수 있다는 뜻이라, EErrorCode 하나로 조용히
+        // 넘기고 계속 돌게 두면 안 된다.
         private const long m_MaxClockRollbackToleranceMs = 5000;
 
         private static long CurrentTimeMs() => (long)(DateTime.UtcNow - m_Epoch).TotalMilliseconds;
@@ -119,9 +129,13 @@ namespace ShopPurchase.Core
             long rollbackMs = _lastTimestamp - now;
             if (rollbackMs > m_MaxClockRollbackToleranceMs)
             {
-                throw new InvalidOperationException(
-                    $"JHGUIDGenerator: 시스템 시계가 {rollbackMs}ms만큼 뒤로 흘렀습니다 " +
-                    $"(허용 오차 {m_MaxClockRollbackToleranceMs}ms). 시계 설정을 확인하세요.");
+                // Environment.FailFast는 어떤 catch(Exception)도 가로챌 수 없이 프로세스를 바로
+                // 종료시킨다 — DBManager나 JHTimingWheel의 catch가 이 심각한 장애를 EErrorCode.Exception
+                // 하나로 뭉개고 서버가 계속 도는 일이 없도록 한다.
+                string message = $"[FATAL] JHGUIDGenerator: 시스템 시계가 {rollbackMs}ms만큼 뒤로 흘렀습니다 " +
+                    $"(허용 오차 {m_MaxClockRollbackToleranceMs}ms). GUID 유일성을 더 이상 보장할 수 없어 서버를 즉시 종료합니다.";
+                Environment.FailFast(message);
+                throw new InvalidOperationException(message); // FailFast가 이미 프로세스를 종료시켜 도달하지 않는다.
             }
 
             var spinWait = new SpinWait();
