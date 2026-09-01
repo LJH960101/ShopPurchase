@@ -167,10 +167,12 @@ namespace ShopPurchase.Core.Thread
                 try
                 {
                     _onRejected(_error);
-                }
-                finally
-                {
                     next.Reject(_error);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[JHJob] Catch에서 처리 안 된 예외: {ex}");
+                    next.Reject(EErrorCode.Exception);
                 }
             });
             return next;
