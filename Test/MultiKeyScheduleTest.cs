@@ -89,14 +89,17 @@ namespace ShopPurchase.Test
                 });
             }
 
+            bool allCompleted = true;
             foreach (var doneEvent in doneEvents)
             {
-                doneEvent.Wait(TimeSpan.FromSeconds(10));
+                if (!doneEvent.Wait(TimeSpan.FromSeconds(10))) allCompleted = false;
             }
 
-            Console.WriteLine(violationDetected
-                ? "FAIL: 겹치는 key를 가진 작업이 동시에 실행됨"
-                : $"PASS: {m_TaskCount}개 작업 모두 겹치는 key끼리 동시 실행되지 않음");
+            Console.WriteLine(!allCompleted
+                ? "FAIL: 10초 안에 끝나지 않은 작업이 있음 (데드락 의심)"
+                : violationDetected
+                    ? "FAIL: 겹치는 key를 가진 작업이 동시에 실행됨"
+                    : $"PASS: {m_TaskCount}개 작업 모두 겹치는 key끼리 동시 실행되지 않음");
 
             Console.WriteLine("=== 동시 실행 방지 검증 완료 ===");
         }
