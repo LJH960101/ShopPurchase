@@ -175,16 +175,15 @@ namespace ShopPurchase.Core.Thread
                     m_currentSlot = (m_currentSlot + 1) % m_WheelSize;
                 }
 
+                // C# 5부터 foreach 변수는 반복마다 새 스코프라, 클로저 캡처용 임시 변수가 따로 필요 없다.
                 foreach (var action in dueDelays)
                 {
-                    var capturedAction = action;
-                    ThreadPool.QueueUserWorkItem(_ => RunDelayAction(capturedAction));
+                    ThreadPool.QueueUserWorkItem(_ => RunDelayAction(action));
                 }
 
                 foreach (var task in dueTasks)
                 {
-                    var capturedTask = task;
-                    ThreadPool.QueueUserWorkItem(_ => RunWithKeyLocks(capturedTask));
+                    ThreadPool.QueueUserWorkItem(_ => RunWithKeyLocks(task));
                 }
             }
         }
