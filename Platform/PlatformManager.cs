@@ -22,8 +22,8 @@ namespace ShopPurchase.Platform
             m_platforms = BuildPlatforms();
         }
 
-        // 플랫폼이 추가될 때마다 이 클래스에 등록 코드를 직접 추가해야 하는 비효율적인 코드가 늘어나는 것을
-        // 최소화하기 위해, 리플렉션을 사용하여 IPlatform 구현 클래스만 추가하면 자동으로 대응되도록 작업하였습니다.
+        // 플랫폼이 추가될 때마다 이 클래스에 등록 코드를 직접 추가해야 하는 번거로움을 없애기 위해,
+        // 리플렉션으로 IPlatform 구현 클래스를 스캔해서 자동으로 등록한다.
         private static Dictionary<EPlatform, IPlatform> BuildPlatforms()
         {
             var implementationTypes = typeof(IPlatform).Assembly

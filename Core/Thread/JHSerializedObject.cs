@@ -30,7 +30,7 @@ namespace ShopPurchase.Core.Thread
     {
         private readonly GUID m_key;
 
-        // null = 쉬고 있음. Interlocked.CompareExchange로만 갈아끼우는 lock-free 체인의 "현재 꼬리".
+        // null = 쉬고 있음. Interlocked.Exchange로만 갈아끼우는 lock-free 체인의 "현재 꼬리".
         private Task m_currentTask;
 
         protected JHSerializedObject(GUID _key)
