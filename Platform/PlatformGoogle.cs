@@ -1,22 +1,12 @@
 using ShopPurchase.Common;
-using ShopPurchase.Core.Thread;
-using ShopPurchase.HTTP;
 
 namespace ShopPurchase.Platform
 {
-    public class PlatformGoogle : IPlatform
+    public class PlatformGoogle : PlatformVerifierBase
     {
-        private const string m_SuccessReceipt = "1111";
-        private const string m_VerifyUrl = "https://mock.googleplay.com/verify";
-
-        public EPlatform GetPlatformEnum() => EPlatform.GooglePlay;
-
-        public JHJob<bool> Verify(string _receipt)
+        public PlatformGoogle()
+            : base(EPlatform.GooglePlay, _successReceipt: "1111", _verifyUrl: "https://mock.googleplay.com/verify")
         {
-            return HTTPManager.Send(m_VerifyUrl, _receipt)
-                .Then(_response => _response == m_SuccessReceipt
-                    ? JHJob<bool>.Resolved(true)
-                    : JHJob<bool>.Rejected(EErrorCode.ReceiptVerifyFailed));
         }
     }
 }
