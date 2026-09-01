@@ -46,9 +46,11 @@ namespace ShopPurchase.Object
         }
 
         /// <summary>
-        /// 정상적인 업무 실패(EErrorCode)가 아니라 더 이상 신뢰할 수 없는 상태(예: DB는 이미 커밋됐는데
-        /// 메모리 반영 중 예상 못한 예외가 난 경우)일 때 세션을 끊는다. 재접속하면 메모리가 DB로부터
-        /// 다시 로드되니 어긋난 상태로 계속 진행하는 것보다 안전하다.
+        /// 클라이언트 잘못이 아니라 서버 쪽 문제(DB 연결/삽입/지급 실패, 미등록 플랫폼, 예상 못한
+        /// 예외 등)로 요청이 실패했을 때 세션을 끊는다. 이런 실패는 재시도해도 서버 상태가 고쳐지는
+        /// 게 아니라서, 응답만 돌려주고 계속 진행하기보다 재접속시켜 다시 시도하게 하는 편이 안전하다
+        /// (PacketHandler_Shop.Catch에서 ReceiptAlreadyInserted/ReceiptVerifyFailed처럼 클라이언트
+        /// 잘못으로 인한 실패만 화이트리스트로 걸러내고, 나머지는 전부 여기로 온다).
         /// </summary>
         public void Kick(EErrorCode _reason)
         {
