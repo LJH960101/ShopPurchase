@@ -40,21 +40,23 @@ namespace ShopPurchase.Platform
             return platforms;
         }
 
+        /// <summary>등록된 구현체가 없으면(설정/배포 누락) null.</summary>
         public IPlatform GetPlatform(EPlatform _platform)
         {
-            // 여기 걸리면 EPlatform 값 하나에 대응하는 IPlatform 구현체가 아예 없다는 뜻 — 설정/배포 누락
-            // 같은 진짜 버그다. 정상적인 실패(EErrorCode.ReceiptVerifyFailed 등)와는 성격이 달라서
-            // ErrorCode로 흘려보내지 않고, 즉시 예외로 드러낸다.
-            if (!m_platforms.TryGetValue(_platform, out var impl))
-                throw new InvalidOperationException($"Unsupported platform (등록된 IPlatform 구현체 없음): {_platform}");
-
-            return impl;
+            return m_platforms.TryGetValue(_platform, out var impl) ? impl : null;
         }
 
-        /// <summary>주어진 플랫폼의 검증 전략을 찾아 영수증을 검증한다.</summary>
+        /// <summary>
+        /// 주어진 플랫폼의 검증 전략을 찾아 영수증을 검증한다. 등록된 구현체가 없으면(설정/배포
+        /// 누락) 예외 대신 EErrorCode.UnsupportedPlatform으로 reject한다.
+        /// </summary>
         public JHJob<bool> Verify(EPlatform _platform, string _receipt)
         {
-            return GetPlatform(_platform).Verify(_receipt);
+            var platform = GetPlatform(_platform);
+            if (platform == null)
+                return JHJob<bool>.Rejected(EErrorCode.UnsupportedPlatform);
+
+            return platform.Verify(_receipt);
         }
     }
 }
