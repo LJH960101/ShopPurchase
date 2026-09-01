@@ -19,9 +19,9 @@ namespace ShopPurchase.DB
     /// 이 안에서 공유 상태를 건드리는 곳(영수증 중복 체크)은 그래서 별도 락 없이도 안전하도록
     /// ConcurrentDictionary 같은 원자적 자료구조로만 처리한다.
     ///
-    /// 실패해도 throw하지 않는다 — work는 (EErrorCode, T)를 그대로 반환하면 되고, 그걸 JHJob의
-    /// EErrorCode reject로 바꾸는 건 여기서 직접 한다. work가 정말 예상 못한 예외를 던지면 잡아서
-    /// 로그를 남기고 EErrorCode.Exception으로 변환한다.
+    /// 실패해도 throw하지 않는다 — 실패 분기마다 job.Reject(EErrorCode)를 바로 부르고 return한다.
+    /// 정말 예상 못한 예외가 나면 감싸고 있는 catch가 잡아서 로그를 남기고, 영수증 중복 체크
+    /// 항목도 반드시 정리한 뒤 EErrorCode.Exception으로 reject한다.
     /// </summary>
     public class DBManager
     {
