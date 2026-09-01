@@ -45,7 +45,12 @@ namespace ShopPurchase.Core.Thread
         private readonly List<JHTask>[] m_slots;
         private readonly object m_slotLock = new object();
         private int m_currentSlot;
-        private volatile bool m_running;
+        private volatile bool m_stopRequested;
+        private readonly System.Threading.Thread m_tickThread;
+
+        // 아직 어느 슬롯엔가 남아있는(=드레인 안 된) 예약 개수. m_slotLock으로만 보호한다 — 슬롯에
+        // 추가/드레인할 때 항상 같이 갱신되므로, Stop()이 "진짜 다 돌았는지"를 정확히 판단할 수 있다.
+        private int m_pendingCount;
 
         // key마다 새로 만드는 대신, 처음에 고정 개수만큼 전부 만들어두고 key는 해시로 슬롯 인덱스에 매핑한다.
         private readonly KeyLock[] m_keyLocks;
@@ -77,14 +82,13 @@ namespace ShopPurchase.Core.Thread
             m_keyLocks = new KeyLock[lockCount];
             for (int i = 0; i < lockCount; i++) m_keyLocks[i] = new KeyLock();
 
-            m_running = true;
             // ShopPurchase.Core.Thread 네임스페이스와 이름이 겹쳐서 System.Threading.Thread로 완전히 명시한다.
-            var tickThread = new System.Threading.Thread(TickLoop)
+            m_tickThread = new System.Threading.Thread(TickLoop)
             {
                 IsBackground = true,
                 Name = "JHTimingWheelTick",
             };
-            tickThread.Start();
+            m_tickThread.Start();
         }
 
         /// <summary>
@@ -99,6 +103,7 @@ namespace ShopPurchase.Core.Thread
             {
                 int targetSlot = (m_currentSlot + ticksAhead) % m_WheelSize;
                 m_delaySlots[targetSlot].Add(_action);
+                m_pendingCount++;
             }
         }
 
@@ -118,6 +123,7 @@ namespace ShopPurchase.Core.Thread
             {
                 int targetSlot = (m_currentSlot + ticksAhead) % m_WheelSize;
                 m_slots[targetSlot].Add(new JHTask { LockIndices = lockIndices, Action = _action });
+                m_pendingCount++;
             }
         }
 
@@ -156,12 +162,20 @@ namespace ShopPurchase.Core.Thread
 
         private void TickLoop()
         {
-            while (m_running)
+            // Stop()이 요청되면 남은 슬롯 개수(m_pendingCount)가 0이 되는 즉시 멈춘다 — 보통은 이미
+            // 다 처리된 뒤라 한두 틱 안에 끝난다. 혹시 카운트가 안 맞는 버그가 있어도 무한정 안 멈추고
+            // 있지 않도록, 한 바퀴(m_WheelSize틱)를 넘기면 그때는 그냥 강제로 멈춘다 — ComputeTicksAhead가
+            // 예약 가능한 최대 지연을 이미 "한 바퀴 이내"로 클램프해두므로, 정상적인 경우라면 한 바퀴
+            // 전에 반드시 0이 된다.
+            int ticksSinceStopRequested = -1;
+
+            while (true)
             {
                 System.Threading.Thread.Sleep(m_TickIntervalMs);
 
                 List<Action> dueDelays;
                 List<JHTask> dueTasks;
+                bool isDrained;
                 lock (m_slotLock)
                 {
                     // 현재 슬롯을 읽어서 "그 슬롯의 내용물을 통째로 비우기 + 다음 슬롯으로 전진"까지
@@ -173,6 +187,8 @@ namespace ShopPurchase.Core.Thread
                     dueTasks = m_slots[m_currentSlot];
                     m_slots[m_currentSlot] = new List<JHTask>();
                     m_currentSlot = (m_currentSlot + 1) % m_WheelSize;
+                    m_pendingCount -= dueDelays.Count + dueTasks.Count;
+                    isDrained = m_pendingCount == 0;
                 }
 
                 // C# 5부터 foreach 변수는 반복마다 새 스코프라, 클로저 캡처용 임시 변수가 따로 필요 없다.
@@ -184,6 +200,14 @@ namespace ShopPurchase.Core.Thread
                 foreach (var task in dueTasks)
                 {
                     ThreadPool.QueueUserWorkItem(_ => RunWithKeyLocks(task));
+                }
+
+                if (m_stopRequested)
+                {
+                    if (isDrained) break;
+
+                    ticksSinceStopRequested++;
+                    if (ticksSinceStopRequested >= m_WheelSize) break;
                 }
             }
         }
@@ -236,6 +260,16 @@ namespace ShopPurchase.Core.Thread
             Interlocked.Exchange(ref m_keyLocks[_index].Locked, 0);
         }
 
-        public void Stop() => m_running = false;
+        /// <summary>
+        /// 새 예약을 막는 게 아니라, 호출 시점에 이미 예약돼 있던 작업이 전부 드레인될 때까지
+        /// 기다렸다가(보통 한두 틱 안에 끝남, 최악의 경우 한 바퀴) tick 스레드가 실제로 멈춘 뒤에
+        /// 리턴한다 — Stop()만 부르고 바로 프로세스가 끝나버리면 드레인이 시작도 못 해보고 함께
+        /// 죽어버리므로, 호출자가 결과를 기다릴 수 있도록 블로킹으로 만들었다.
+        /// </summary>
+        public void Stop()
+        {
+            m_stopRequested = true;
+            m_tickThread.Join();
+        }
     }
 }
