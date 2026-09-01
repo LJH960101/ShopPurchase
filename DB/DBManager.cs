@@ -98,6 +98,12 @@ namespace ShopPurchase.DB
                 }
                 catch (Exception ex)
                 {
+                    // 이 예외가 EndTran(커밋) 이전인지 이후인지는 구분하지 않는다 — 커밋 이후라면
+                    // 이미 DB엔 반영됐는데 영수증만 다시 풀어주는 셈이라 재사용 위험이 있지만, 지금은
+                    // 어차피 EErrorCode.Exception이 화이트리스트 밖이라 PacketHandler_Shop.Catch가
+                    // 무조건 Kick으로 보낸다 — 애매하게 반반씩 처리하지 말고 "확실치 않으면 통째로
+                    // 의심하고 끊는다"로 단순하게 간다. 실제 DB로 교체되면 이 지점에서 커밋 여부를
+                    // 정말로 구분해야 할 수 있다.
                     Console.WriteLine($"[DBManager] InsertShopReceipt에서 처리 안 된 예외: {ex}");
                     m_consumedReceipts.TryRemove(_receipt, out _);
                     job.Reject(EErrorCode.Exception);
