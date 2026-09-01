@@ -54,7 +54,7 @@ namespace ShopPurchase.Test
                 {
                     var thread = new System.Threading.Thread(() =>
                     {
-                        var localRandom = new Random(Guid.NewGuid().GetHashCode());
+                        var localRandom = new Random();
                         for (int c = 0; c < m_CallsPerThread; c++)
                         {
                             Action work = () =>
