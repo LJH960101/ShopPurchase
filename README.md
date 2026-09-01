@@ -22,14 +22,14 @@
 
 시간이 없다면 이 4곳만 봐도 충분합니다:
 
-1. [`Core/Thread/JHSerializedObject.cs`의 `PostCore`(105번째 줄)](Core/Thread/JHSerializedObject.cs#L105) —
+1. [`Core/Thread/JHSerializedObject.cs`의 `PostCore`(70번째 줄)](Core/Thread/JHSerializedObject.cs#L70) —
    CAS 재시도 루프 + `ContinueWith` 조합이 왜 위험한지, `Interlocked.Exchange`로 어떻게
    해결했는지
 2. [`Core/Thread/JHTimingWheel.cs`의 클래스 상단 주석](Core/Thread/JHTimingWheel.cs#L34) —
    lock-free로 만들었다가 되돌린 이유 (정합성 vs 성능 트레이드오프 판단)
 3. [`Core/JHGUIDGenerator.cs`의 `Next()`(70번째 줄)](Core/JHGUIDGenerator.cs#L70) —
    Sequence를 왜 wraparound가 아니라 ms 전환 기준으로 리셋해야 하는지
-4. [`DB/DBManager.cs`의 `InsertShopReceipt`(50번째 줄)](DB/DBManager.cs#L50) —
+4. [`DB/DBManager.cs`의 `InsertShopReceipt`(54번째 줄)](DB/DBManager.cs#L54) —
    왜 트랜잭션 전체가 "하나의 비동기 콜백"이어야 하는지
 
 **보너스: 테스트가 실제로 버그를 잡은 사례**
