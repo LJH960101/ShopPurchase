@@ -1,7 +1,6 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using ShopPurchase.Common;
 
 namespace ShopPurchase.Core.Thread
 {
@@ -46,22 +45,6 @@ namespace ShopPurchase.Core.Thread
         }
 
         /// <summary>
-        /// delayMs 뒤에 work를 실행하고 결과를 JHJob으로 돌려준다. work는 throw하지 않고
-        /// (EErrorCode, T)를 반환하면 된다.
-        /// </summary>
-        protected JHJob<T> Reserve<T>(int _delayMs, Func<(EErrorCode ErrorCode, T Value)> _work)
-        {
-            var job = new JHJob<T>();
-            JHTimingWheel.Instance.ScheduleDelay(_delayMs, () =>
-            {
-                Post(_work)
-                    .Then(job.Resolve)
-                    .Catch(job.Reject);
-            });
-            return job;
-        }
-
-        /// <summary>
         /// 이 객체에 대해 직렬화된 상태로 action을 처리한다. 지금 쉬고 있으면 호출한 스레드에서 즉시
         /// 실행하고, 이미 처리 중이면 그 뒤에 이어붙어서 앞선 작업이 끝나는 대로 실행된다.
         /// </summary>
@@ -78,24 +61,6 @@ namespace ShopPurchase.Core.Thread
                     Console.WriteLine($"[JHSerializedObject:{m_key}] Post에서 처리 안 된 예외: {ex}");
                 }
             });
-        }
-
-        /// <summary>
-        /// Post의 결과를 JHJob으로 돌려받는 버전. work는 Reserve&lt;T&gt;와 마찬가지로 throw하지 않고
-        /// (EErrorCode, T)를 반환하면 된다.
-        /// </summary>
-        public JHJob<T> Post<T>(Func<(EErrorCode ErrorCode, T Value)> _work)
-        {
-            var job = new JHJob<T>();
-            PostCore(() =>
-            {
-                (EErrorCode errorCode, T value) = RunWork(_work);
-                if (errorCode == EErrorCode.Success)
-                    job.Resolve(value);
-                else
-                    job.Reject(errorCode);
-            });
-            return job;
         }
 
         /// <summary>
@@ -139,23 +104,6 @@ namespace ShopPurchase.Core.Thread
             {
                 // 아직 실행 중이었다 -> 그 뒤에 이어붙인다. previous가 끝나면 자동으로 이어서 실행된다.
                 previous.ContinueWith(_ => RunAndComplete());
-            }
-        }
-
-        /// <summary>
-        /// work를 실행해서 (EErrorCode, T)를 그대로 돌려준다 — throw하지 않는다. work가 예상 못한
-        /// 예외를 던지면 여기서 잡아서 에러 로그를 남기고 EErrorCode.Exception으로 변환해서 반환한다.
-        /// </summary>
-        private (EErrorCode ErrorCode, T Value) RunWork<T>(Func<(EErrorCode ErrorCode, T Value)> _work)
-        {
-            try
-            {
-                return _work();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[JHSerializedObject:{m_key}] work 실행 중 예외 발생: {ex}");
-                return (EErrorCode.Exception, default(T));
             }
         }
     }
