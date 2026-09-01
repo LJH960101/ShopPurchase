@@ -48,12 +48,6 @@ namespace ShopPurchase.Core.Thread
         private volatile bool m_stopRequested;
         private readonly System.Threading.Thread m_tickThread;
 
-        // 예약됐지만 아직 "실행이 끝나지 않은" 개수. 슬롯에서 꺼내는 시점이 아니라 ThreadPool에서
-        // 실제로 RunDelayAction/RunWithKeyLocks가 끝나는 시점(성공/예외 무관)에 줄어든다 — 그래야
-        // Stop()이 "휠에서 꺼내기만 했다"가 아니라 "진짜 다 실행됐다"를 보고 멈출 수 있다. 증가는
-        // m_slotLock 안에서, 감소는 ThreadPool 콜백에서 일어나 서로 다른 스레드가 건드리므로 Interlocked로만 다룬다.
-        private int m_pendingCount;
-
         // key마다 새로 만드는 대신, 처음에 고정 개수만큼 전부 만들어두고 key는 해시로 슬롯 인덱스에 매핑한다.
         private readonly KeyLock[] m_keyLocks;
 
@@ -106,7 +100,6 @@ namespace ShopPurchase.Core.Thread
                 int targetSlot = (m_currentSlot + ticksAhead) % m_WheelSize;
                 m_delaySlots[targetSlot].Add(_action);
             }
-            Interlocked.Increment(ref m_pendingCount);
         }
 
         /// <summary>delayMs 뒤에, keys가 매핑되는 락 슬롯을 전부 잠근 상태에서 action을 실행하도록 예약한다.</summary>
@@ -126,7 +119,6 @@ namespace ShopPurchase.Core.Thread
                 int targetSlot = (m_currentSlot + ticksAhead) % m_WheelSize;
                 m_slots[targetSlot].Add(new JHTask { LockIndices = lockIndices, Action = _action });
             }
-            Interlocked.Increment(ref m_pendingCount);
         }
 
         /// <summary>
@@ -164,35 +156,13 @@ namespace ShopPurchase.Core.Thread
 
         private void TickLoop()
         {
-            // Stop()이 요청되면 남은 슬롯 개수(m_pendingCount)가 0이 되는 즉시 멈춘다 — 보통은 이미
-            // 다 처리된 뒤라 한두 틱 안에 끝난다. 혹시 카운트가 안 맞는 버그가 있어도 무한정 안 멈추고
-            // 있지 않도록, 한 바퀴(m_WheelSize틱)를 넘기면 그때는 그냥 강제로 멈춘다 — ComputeTicksAhead가
-            // 예약 가능한 최대 지연을 이미 "한 바퀴 이내"로 클램프해두므로, 정상적인 경우라면 한 바퀴
-            // 전에 반드시 0이 된다.
-            int ticksSinceStopRequested = -1;
-
-            while (true)
+            while (!m_stopRequested)
             {
                 System.Threading.Thread.Sleep(m_TickIntervalMs);
 
-                List<Action> dueDelays;
-                List<JHTask> dueTasks;
-                lock (m_slotLock)
-                {
-                    // 현재 슬롯을 읽어서 "그 슬롯의 내용물을 통째로 비우기 + 다음 슬롯으로 전진"까지
-                    // 전부 이 lock 안에서 원자적으로 처리한다. 프로듀서(ScheduleDelay/Schedule)의
-                    // "현재 슬롯 읽기 + 추가하기"도 같은 lock을 쓰므로, 프로듀서가 방금 비워진(혹은
-                    // 곧 비워질) 슬롯에 잘못 추가해서 한 바퀴(약 10초)를 그냥 날려버리는 경우가 없다.
-                    dueDelays = m_delaySlots[m_currentSlot];
-                    m_delaySlots[m_currentSlot] = new List<Action>();
-                    dueTasks = m_slots[m_currentSlot];
-                    m_slots[m_currentSlot] = new List<JHTask>();
-                    m_currentSlot = (m_currentSlot + 1) % m_WheelSize;
-                }
+                var (dueDelays, dueTasks) = DrainCurrentSlot();
 
                 // C# 5부터 foreach 변수는 반복마다 새 스코프라, 클로저 캡처용 임시 변수가 따로 필요 없다.
-                // m_pendingCount는 여기서 꺼낸 시점이 아니라 RunDelayAction/RunWithKeyLocks가 실제로
-                // 끝나는 시점(finally)에 줄어든다 — "휠에서 꺼냈다"와 "실행이 끝났다"를 구분하기 위해서다.
                 foreach (var action in dueDelays)
                 {
                     ThreadPool.QueueUserWorkItem(_ => RunDelayAction(action));
@@ -202,18 +172,40 @@ namespace ShopPurchase.Core.Thread
                 {
                     ThreadPool.QueueUserWorkItem(_ => RunWithKeyLocks(task));
                 }
+            }
 
-                if (m_stopRequested)
-                {
-                    if (Volatile.Read(ref m_pendingCount) == 0) break;
+            // Stop() 요청됨 — 더 이상 풀에 던지지 않고, 남아있는 슬롯을 tick 스레드가 직접(동기로)
+            // 실행해서 확실하게 다 끝낸다. 실제 시간을 더 기다릴 이유가 없으니 Sleep도 하지 않는다.
+            // ComputeTicksAhead가 예약 가능한 최대 지연을 이미 "한 바퀴 이내"로 클램프해두므로,
+            // 한 바퀴(m_WheelSize번)만 돌면 호출 시점에 예약돼 있던 건 슬롯이 몇 번이든 전부 나온다.
+            for (int i = 0; i < m_WheelSize; i++)
+            {
+                var (dueDelays, dueTasks) = DrainCurrentSlot();
 
-                    ticksSinceStopRequested++;
-                    if (ticksSinceStopRequested >= m_WheelSize) break;
-                }
+                foreach (var action in dueDelays) RunDelayAction(action);
+                foreach (var task in dueTasks) RunWithKeyLocks(task);
             }
         }
 
-        private void RunDelayAction(Action _action)
+        /// <summary>현재 슬롯의 내용물을 통째로 비우고 다음 슬롯으로 전진한다.</summary>
+        private (List<Action> DueDelays, List<JHTask> DueTasks) DrainCurrentSlot()
+        {
+            lock (m_slotLock)
+            {
+                // "그 슬롯의 내용물을 통째로 비우기 + 다음 슬롯으로 전진"까지 전부 이 lock 안에서
+                // 원자적으로 처리한다. 프로듀서(ScheduleDelay/Schedule)의 "현재 슬롯 읽기 + 추가하기"도
+                // 같은 lock을 쓰므로, 프로듀서가 방금 비워진(혹은 곧 비워질) 슬롯에 잘못 추가해서
+                // 한 바퀴(약 10초)를 그냥 날려버리는 경우가 없다.
+                List<Action> dueDelays = m_delaySlots[m_currentSlot];
+                m_delaySlots[m_currentSlot] = new List<Action>();
+                List<JHTask> dueTasks = m_slots[m_currentSlot];
+                m_slots[m_currentSlot] = new List<JHTask>();
+                m_currentSlot = (m_currentSlot + 1) % m_WheelSize;
+                return (dueDelays, dueTasks);
+            }
+        }
+
+        private static void RunDelayAction(Action _action)
         {
             try
             {
@@ -222,10 +214,6 @@ namespace ShopPurchase.Core.Thread
             catch (Exception ex)
             {
                 Console.WriteLine($"[JHTimingWheel] ScheduleDelay 액션에서 처리 안 된 예외: {ex}");
-            }
-            finally
-            {
-                Interlocked.Decrement(ref m_pendingCount);
             }
         }
 
@@ -248,7 +236,6 @@ namespace ShopPurchase.Core.Thread
                 {
                     ReleaseIndex(_task.LockIndices[i]);
                 }
-                Interlocked.Decrement(ref m_pendingCount);
             }
         }
 
@@ -267,12 +254,11 @@ namespace ShopPurchase.Core.Thread
         }
 
         /// <summary>
-        /// 새 예약을 막는 게 아니라, 호출 시점에 이미 예약돼 있던 작업이 전부 실행을 끝낼 때까지
-        /// (휠에서 꺼내는 것뿐 아니라 ThreadPool에서 RunDelayAction/RunWithKeyLocks가 실제로
-        /// 끝나는 것까지) 기다렸다가 tick 스레드가 멈춘 뒤에 리턴한다 — 보통 한두 틱 안에 끝나고,
-        /// 최악의 경우 한 바퀴가 상한이다. Stop()만 부르고 바로 프로세스가 끝나버리면 아직 실행
-        /// 중인 작업이 완료 여부와 무관하게 함께 죽어버리므로, 호출자가 진짜 끝을 기다릴 수 있도록
-        /// 블로킹으로 만들었다.
+        /// 새 예약을 막는 게 아니라, 호출 시점에 이미 예약돼 있던 작업을 tick 스레드가 ThreadPool에
+        /// 던지지 않고 직접(동기로) 전부 실행한 뒤에 리턴한다 — "던져놓고 끝났다고 치는" 게 아니라
+        /// 실제로 다 실행되는 것까지 보고 멈추는 거라, 완료 여부를 별도로 추적할 필요가 없다.
+        /// Stop()만 부르고 바로 프로세스가 끝나버리면 아직 실행 중인 작업이 완료 여부와 무관하게
+        /// 함께 죽어버리므로, 호출자가 진짜 끝을 기다릴 수 있도록 블로킹(Thread.Join)으로 만들었다.
         /// </summary>
         public void Stop()
         {
