@@ -23,7 +23,7 @@ namespace ShopPurchase.Platform
             m_verifyUrl = _verifyUrl;
         }
 
-        public EPlatform GetPlatformEnum() => m_platform;
+        public EPlatform GetPlatformType() => m_platform;
 
         public JHJob<bool> Verify(string _receipt)
         {

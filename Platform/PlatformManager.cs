@@ -9,7 +9,7 @@ namespace ShopPurchase.Platform
     /// <summary>
     /// EPlatform -> IPlatform 전략 선택 + 검증 호출을 담당한다.
     /// IPlatform 구현체를 어셈블리에서 리플렉션으로 스캔해 자동으로 등록하므로,
-    /// 새 플랫폼을 추가할 때 이 클래스를 손댈 필요가 없다 (IPlatform 구현 + GetPlatformEnum()만 있으면 됨).
+    /// 새 플랫폼을 추가할 때 이 클래스를 손댈 필요가 없다 (IPlatform 구현 + GetPlatformType()만 있으면 됨).
     /// </summary>
     public class PlatformManager
     {
@@ -34,7 +34,7 @@ namespace ShopPurchase.Platform
             foreach (var type in implementationTypes)
             {
                 var instance = (IPlatform)Activator.CreateInstance(type);
-                platforms[instance.GetPlatformEnum()] = instance;
+                platforms[instance.GetPlatformType()] = instance;
             }
 
             return platforms;
