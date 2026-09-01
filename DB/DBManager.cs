@@ -46,6 +46,10 @@ namespace ShopPurchase.DB
         /// 영수증 등록 + 아이템 지급을 하나의 트랜잭션으로 처리하고, 그 결과(InsertShopReceiptResult)를
         /// JHJob으로 돌려준다. 이 결과의 AddItemDBData를 그대로 메모리 반영(Player.ApplyDBItemContext)에
         /// 써야 한다 — 메모리 쪽에서 보상을 다시 계산하면 DB와 메모리가 어긋날 수 있다.
+        ///
+        /// 중복 체크(TryAdd)는 BeginTran보다 먼저, 트랜잭션 시작 전에 한다 — 같은 영수증으로 동시에
+        /// 두 요청이 들어와도 하나만 통과시키기 위한 것으로, 이걸 트랜잭션 완료 후로 미루면 두 요청이
+        /// 둘 다 통과해서 아이템이 두 번 지급되는 레이스가 생긴다.
         /// </summary>
         public JHJob<InsertShopReceiptResult> InsertShopReceipt(GUID _playerGuid, string _receipt, ProductRecord _product)
         {
@@ -54,58 +58,53 @@ namespace ShopPurchase.DB
 
             JHTimingWheel.Instance.ScheduleDelay(delay, () =>
             {
-                (EErrorCode errorCode, InsertShopReceiptResult value) result;
                 try
                 {
-                    result = RunTran(_receipt, _product);
+                    if (!m_consumedReceipts.TryAdd(_receipt, 0))
+                    {
+                        job.Reject(EErrorCode.ReceiptAlreadyInserted);
+                        return;
+                    }
+
+                    if (Random.Shared.NextDouble() < m_ConnectionFailureRate)
+                    {
+                        m_consumedReceipts.TryRemove(_receipt, out _);
+                        job.Reject(EErrorCode.DBConnectionFailed);
+                        return;
+                    }
+
+                    var tran = BeginTran();
+
+                    var (receiptErrorCode, receiptResult) = SP_InsertShopReceipt(tran, _receipt);
+                    if (receiptErrorCode != EErrorCode.Success)
+                    {
+                        RollbackTran(tran);
+                        m_consumedReceipts.TryRemove(_receipt, out _);
+                        job.Reject(receiptErrorCode);
+                        return;
+                    }
+
+                    var (itemErrorCode, rewardResult) = SP_InsertItem(tran, _product);
+                    if (itemErrorCode != EErrorCode.Success)
+                    {
+                        RollbackTran(tran);
+                        m_consumedReceipts.TryRemove(_receipt, out _);
+                        job.Reject(itemErrorCode);
+                        return;
+                    }
+
+                    EndTran(tran);
+                    job.Resolve(new InsertShopReceiptResult(receiptResult, rewardResult));
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[DBManager] InsertShopReceipt에서 처리 안 된 예외: {ex}");
-                    result = (EErrorCode.Exception, null);
+                    m_consumedReceipts.TryRemove(_receipt, out _);
+                    job.Reject(EErrorCode.Exception);
                 }
-
-                if (result.errorCode == EErrorCode.Success)
-                    job.Resolve(result.value);
-                else
-                    job.Reject(result.errorCode);
             });
 
             return job;
-        }
-
-        private (EErrorCode ErrorCode, InsertShopReceiptResult Value) RunTran(string _receipt, ProductRecord _product)
-        {
-            if (!m_consumedReceipts.TryAdd(_receipt, 0))
-                return (EErrorCode.ReceiptAlreadyInserted, null);
-
-            if (Random.Shared.NextDouble() < m_ConnectionFailureRate)
-            {
-                m_consumedReceipts.TryRemove(_receipt, out _);
-                return (EErrorCode.DBConnectionFailed, null);
-            }
-
-            var tran = BeginTran();
-
-            var (receiptErrorCode, receiptResult) = SP_InsertShopReceipt(tran, _receipt);
-            if (receiptErrorCode != EErrorCode.Success)
-            {
-                RollbackTran(tran);
-                m_consumedReceipts.TryRemove(_receipt, out _);
-                return (receiptErrorCode, null);
-            }
-
-            var (itemErrorCode, rewardResult) = SP_InsertItem(tran, _product);
-            if (itemErrorCode != EErrorCode.Success)
-            {
-                RollbackTran(tran);
-                m_consumedReceipts.TryRemove(_receipt, out _);
-                return (itemErrorCode, null);
-            }
-
-            EndTran(tran);
-
-            return (EErrorCode.Success, new InsertShopReceiptResult(receiptResult, rewardResult));
         }
 
         private DBTransaction BeginTran() => new DBTransaction(m_idGenerator.Next());
