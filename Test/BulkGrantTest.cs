@@ -80,11 +80,15 @@ namespace ShopPurchase.Test
                 });
             }
 
+            bool allCompleted = true;
             foreach (var doneEvent in doneEvents)
             {
-                doneEvent.Wait(TimeSpan.FromSeconds(10));
+                if (!doneEvent.Wait(TimeSpan.FromSeconds(10))) allCompleted = false;
             }
             stopwatch.Stop();
+
+            if (!allCompleted)
+                Console.WriteLine("FAIL: 10초 안에 끝나지 않은 작업이 있음 (데드락 의심)");
 
             PrintStats(bag, stopwatch.Elapsed);
             Console.WriteLine("=== JHTimingWheel 분산 완료 ===");
@@ -92,13 +96,8 @@ namespace ShopPurchase.Test
 
         private static void PrintStats(IReadOnlyCollection<GUID> _ids, TimeSpan _elapsed)
         {
-            int totalCount = _ids.Count;
-            int distinctCount = _ids.Distinct().Count();
-            int duplicateCount = totalCount - distinctCount;
-            double duplicateRate = totalCount == 0 ? 0 : duplicateCount * 100.0 / totalCount;
+            GuidTestHelpers.PrintDuplicateStats(_ids);
             int distinctTimeValues = _ids.Select(id => JHGUIDGenerator.Decode(id).Time).Distinct().Count();
-
-            Console.WriteLine($"생성 개수: {totalCount}, 유일 개수: {distinctCount}, 중복 개수: {duplicateCount} ({duplicateRate:F2}%)");
             Console.WriteLine($"실제 경과 시간: {_elapsed.TotalMilliseconds:F2}ms, 실제로 쓰인 서로 다른 Time 값 개수: {distinctTimeValues}");
         }
     }

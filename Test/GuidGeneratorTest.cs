@@ -42,23 +42,13 @@ namespace ShopPurchase.Test
             }
 
             Task.WaitAll(tasks.ToArray());
-            PrintStats(bag);
+            GuidTestHelpers.PrintDuplicateStats(bag);
 
             var sample = bag.First();
             var (region, server, sequence, time) = JHGUIDGenerator.Decode(sample);
             Console.WriteLine($"샘플 디코드: id={sample} -> region={region}, server={server}, sequence={sequence}, time={time}");
 
             Console.WriteLine("=== GuidGeneratorTest 완료 ===");
-        }
-
-        private static void PrintStats(ConcurrentBag<GUID> _bag)
-        {
-            int totalCount = _bag.Count;
-            int distinctCount = _bag.Distinct().Count();
-            int duplicateCount = totalCount - distinctCount;
-            double duplicateRate = totalCount == 0 ? 0 : duplicateCount * 100.0 / totalCount;
-
-            Console.WriteLine($"생성 개수: {totalCount}, 유일 개수: {distinctCount}, 중복 개수: {duplicateCount} ({duplicateRate:F2}%)");
         }
     }
 }
