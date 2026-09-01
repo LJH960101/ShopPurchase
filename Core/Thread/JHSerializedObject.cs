@@ -107,7 +107,11 @@ namespace ShopPurchase.Core.Thread
             // TaskCompletionSource로 "이번 작업을 나타내는 Task"를 미리 만들어둔다 — 아직 시작 여부와
             // 무관하게 m_currentTask에 먼저 꽂아넣을 수 있어야 하기 때문이다(직접 실행할지, 이전 작업
             // 뒤에 이어붙일지는 아래에서 딱 한 번만 결정한다).
-            var completionSource = new TaskCompletionSource();
+            // RunContinuationsAsynchronously가 없으면 SetResult()를 부르는 스레드에서 다음 작업의
+            // ContinueWith 콜백이 동기적으로 바로 실행된다 — 같은 객체에 Post/Reserve가 길게 줄서
+            // 있으면 그 콜백들이 한 스레드의 호출 스택 위에 재귀적으로 쌓여버릴 수 있다. 이 옵션을
+            // 주면 각 콜백이 항상 ThreadPool로 새로 디스패치돼서 스택이 쌓이지 않는다.
+            var completionSource = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             Task newTask = completionSource.Task;
 
             void RunAndComplete()
