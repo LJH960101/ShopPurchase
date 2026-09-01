@@ -1,4 +1,4 @@
-using ShopPurchase.Core;
+using System;
 using ShopPurchase.Core.Thread;
 
 namespace ShopPurchase.HTTP
@@ -14,7 +14,7 @@ namespace ShopPurchase.HTTP
     {
         public static JHJob<string> Send(string _url, string _body)
         {
-            int delay = JHRandomProvider.GetRandom().Next(50, 200);
+            int delay = Random.Shared.Next(50, 200);
             var job = new JHJob<string>();
             JHTimingWheel.Instance.ScheduleDelay(delay, () => job.Resolve(_body));
             return job;

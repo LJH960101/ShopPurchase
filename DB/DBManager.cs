@@ -49,7 +49,7 @@ namespace ShopPurchase.DB
         /// </summary>
         public JHJob<InsertShopReceiptResult> InsertShopReceipt(GUID _playerGuid, string _receipt, ProductRecord _product)
         {
-            int delay = JHRandomProvider.GetRandom().Next(20, 100);
+            int delay = Random.Shared.Next(20, 100);
             var job = new JHJob<InsertShopReceiptResult>();
 
             JHTimingWheel.Instance.ScheduleDelay(delay, () =>
@@ -79,7 +79,7 @@ namespace ShopPurchase.DB
             if (!m_consumedReceipts.TryAdd(_receipt, 0))
                 return (EErrorCode.ReceiptAlreadyInserted, null);
 
-            if (JHRandomProvider.GetRandom().NextDouble() < m_ConnectionFailureRate)
+            if (Random.Shared.NextDouble() < m_ConnectionFailureRate)
             {
                 m_consumedReceipts.TryRemove(_receipt, out _);
                 return (EErrorCode.DBConnectionFailed, null);
@@ -122,7 +122,7 @@ namespace ShopPurchase.DB
 
         private (EErrorCode ErrorCode, ShopReceiptData Value) SP_InsertShopReceipt(DBTransaction _tran, string _receipt)
         {
-            if (JHRandomProvider.GetRandom().NextDouble() < m_InsertFailureRate)
+            if (Random.Shared.NextDouble() < m_InsertFailureRate)
                 return (EErrorCode.InsertReceiptFailed, null);
 
             return (EErrorCode.Success, new ShopReceiptData(m_idGenerator.Next(), _receipt));
@@ -130,7 +130,7 @@ namespace ShopPurchase.DB
 
         private (EErrorCode ErrorCode, RewardData Value) SP_InsertItem(DBTransaction _tran, ProductRecord _product)
         {
-            if (JHRandomProvider.GetRandom().NextDouble() < m_UpdateFailureRate)
+            if (Random.Shared.NextDouble() < m_UpdateFailureRate)
                 return (EErrorCode.UpdateItemFailed, null);
 
             var items = new List<ItemData> { new ItemData(_product.ItemId, _product.ItemCount) };

@@ -112,7 +112,7 @@ PacketHandler_Shop.C2P_RequestShopBuy
 ## 프로젝트 구조
 
 ```
-Core/                  JHGUIDGenerator, JHRandomProvider
+Core/                  JHGUIDGenerator
 Core/Thread/           JHJob, JHTimingWheel, JHSerializedObject
 Common/                EErrorCode/EPlatform/ECurrencyType, 공용 데이터 타입, GUID 타입 별칭
 Network/               패킷 정의 (C2P_RequestShopBuy / P2C_ResultShopBuy)
