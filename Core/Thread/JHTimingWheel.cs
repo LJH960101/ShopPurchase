@@ -53,6 +53,12 @@ namespace ShopPurchase.Core.Thread
         private volatile bool m_stopRequested;
         private readonly System.Threading.Thread m_tickThread;
 
+        // 드레인할 때 슬롯의 리스트와 맞바꿔 쓰는 버퍼. tick마다 새 List를 만드는 대신 이 둘을
+        // 슬롯과 계속 교환해서 돌려쓰므로, 정상 동작 중 슬롯 드레인으로 인한 할당이 아예 없다.
+        // 항상 "직전 드레인에서 호출자에게 넘겨준 리스트"를 들고 있다 (DrainCurrentSlot 주석 참고).
+        private List<Action> m_delayBuffer = new List<Action>();
+        private List<JHTask> m_taskBuffer = new List<JHTask>();
+
         // key마다 새로 만드는 대신, 처음에 고정 개수만큼 전부 만들어두고 key는 해시로 슬롯 인덱스에 매핑한다.
         private readonly KeyLock[] m_keyLocks;
 
@@ -206,16 +212,34 @@ namespace ShopPurchase.Core.Thread
             }
         }
 
-        /// <summary>현재 슬롯의 내용물을 통째로 비우고 다음 슬롯으로 전진한다.</summary>
+        /// <summary>
+        /// 현재 슬롯의 내용물을 통째로 꺼내고 다음 슬롯으로 전진한다. 꺼낸 리스트는 재사용 버퍼와
+        /// 맞바꾼 것이라 이 시점에 슬롯 배열에서 완전히 빠져나온다 — 호출자가 락 밖에서 순회하는
+        /// 동안 프로듀서가 같은 인스턴스에 Add하는 일이 생길 수 없다. 슬롯을 비우지 않고 그대로
+        /// 돌려주면, 한 바퀴 뒤 슬롯을 노리는 긴 지연 예약이 순회 중인 리스트를 건드려
+        /// InvalidOperationException으로 tick 스레드를 죽일 수 있다.
+        ///
+        /// "비우기 + 전진"이 한 lock 안에서 원자적이어야 하는 이유는 클래스 상단 주석 참고.
+        /// </summary>
         private (List<Action> DueDelays, List<JHTask> DueTasks) DrainCurrentSlot()
         {
             lock (m_slotLock)
             {
-                // "비우기 + 전진"이 한 lock 안에서 원자적이어야 하는 이유는 클래스 상단 주석 참고.
+                // 지난번에 돌려준 버퍼를 여기서 비운다. 이 메서드는 tick 스레드에서만, 그것도 호출자가
+                // 앞선 결과를 다 처리한 뒤에야 다시 불리므로 이 시점엔 아무도 그 리스트를 보고 있지
+                // 않다. 비우는 책임을 호출자에게 넘기면 깜빡했을 때 옛 작업이 슬롯에 다시 실려
+                // 두 번 실행되는, 훨씬 찾기 어려운 버그가 된다.
+                m_delayBuffer.Clear();
+                m_taskBuffer.Clear();
+
                 List<Action> dueDelays = m_delaySlots[m_currentSlot];
-                if (dueDelays.Count > 0) m_delaySlots[m_currentSlot] = new List<Action>();
+                m_delaySlots[m_currentSlot] = m_delayBuffer;
+                m_delayBuffer = dueDelays;
+
                 List<JHTask> dueTasks = m_slots[m_currentSlot];
-                if (dueTasks.Count > 0) m_slots[m_currentSlot] = new List<JHTask>();
+                m_slots[m_currentSlot] = m_taskBuffer;
+                m_taskBuffer = dueTasks;
+
                 m_currentSlot = (m_currentSlot + 1) % WheelSize;
                 return (dueDelays, dueTasks);
             }
