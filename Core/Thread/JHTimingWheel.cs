@@ -269,6 +269,14 @@ namespace ShopPurchase.Core.Thread
             {
                 _task.Action();
             }
+            catch (Exception ex)
+            {
+                // RunDelayAction과 같은 정책이다 — 호출자가 넘긴 액션이 던진 예외 때문에 휠이
+                // 죽어서는 안 된다. 정상 동작 중에는 이 메서드가 ThreadPool 위에서 돌기 때문에
+                // 여기서 안 잡으면 미처리 예외로 프로세스가 통째로 종료되고, 종료 드레인에서는
+                // tick 스레드에서 직접 돌아서 남은 슬롯을 못 비운 채 스레드가 죽는다.
+                Console.WriteLine($"[JHTimingWheel] Schedule 액션에서 처리 안 된 예외: {ex}");
+            }
             finally
             {
                 // 반납 순서는 데드락 여부와 무관하다 — 획득 순서만 전역적으로 일관되면 된다.
