@@ -17,6 +17,10 @@ namespace ShopPurchase.Test
         private const int m_KeyCount = 5;
         private const int m_TaskCount = 300;
 
+        // 첫 실행 이후 "혹시 한 번 더 실행되지 않는지" 지켜보는 시간. 휠의 tick 간격(10ms)보다
+        // 충분히 길게 잡아서, 다음 tick에 중복 실행이 오더라도 판정 전에 잡히도록 한다.
+        private const int m_DuplicateWatchMs = 100;
+
         public static void Run()
         {
             RunRunOnceCheck();
@@ -37,6 +41,11 @@ namespace ShopPurchase.Test
             });
 
             bool completed = doneEvent.Wait(TimeSpan.FromSeconds(5));
+
+            // doneEvent는 "첫 실행"이 끝나는 순간 풀리므로, 여기서 바로 executionCount를 읽으면
+            // 중복 실행이 있어도 아직 안 일어났을 수 있다 — 정확히 이 테스트가 잡아야 하는 버그를
+            // 관측할 시간이 없는 셈이다. 휠의 tick 간격(10ms)보다 넉넉히 기다린 뒤에 판정한다.
+            if (completed) Thread.Sleep(m_DuplicateWatchMs);
 
             Console.WriteLine(!completed
                 ? "FAIL: 5초 안에 실행되지 않음 (데드락 의심)"
