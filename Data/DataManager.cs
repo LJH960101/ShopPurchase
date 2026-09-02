@@ -4,7 +4,8 @@ namespace ShopPurchase.Data
 {
     /// <summary>
     /// 실제 데이터 시트 로딩 없이, 상품 테이블만 코드에 박아넣은 더미 구현.
-    /// SP_UpdateItem이 하던 "무엇을 얼마나 줄지" 결정을 이제 여기(상품 정의)가 담당한다.
+    /// "무엇을 얼마나 줄지"는 DB가 아니라 여기 정의된 ProductRecord가 정하고,
+    /// 실제 보상 환산은 ProductRecord.GetReward()가 한다.
     /// </summary>
     public class DataManager
     {

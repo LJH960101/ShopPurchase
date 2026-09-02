@@ -23,10 +23,9 @@ namespace ShopPurchase.Object
             m_platform = _platform;
         }
 
-        /// <summary>플레이어 고유 GUID. JHSerializedObject의 직렬화 key로도 그대로 쓰인다.</summary>
+        /// <summary>JHSerializedObject의 직렬화 key로도 그대로 쓰인다.</summary>
         public GUID GetGUID() => m_guid;
 
-        /// <summary>이 플레이어가 구매에 사용 중인 플랫폼.</summary>
         public EPlatform GetPlatformType() => m_platform;
 
         /// <summary>

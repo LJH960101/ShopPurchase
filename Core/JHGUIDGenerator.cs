@@ -7,8 +7,8 @@ namespace ShopPurchase.Core
     /// 여러 서버에 걸쳐(범서버) 유일해야 하는 64bit ulong ID 생성기.
     /// Time(40bit) / Sequence(10bit) / Region(5bit) / Server(9bit)로 비트마스킹한다.
     ///
-    /// - Region  : 5bit, 0~31 (요구사항: 약 20개)
-    /// - Server  : 9bit, 0~511 (요구사항: 약 500개)
+    /// - Region  : 5bit, 0~31 (리전 약 20개를 가정)
+    /// - Server  : 9bit, 0~511 (리전당 서버 약 500대를 가정)
     /// - Sequence: 10bit, 0~1023. ms가 바뀌면 0으로 리셋하고, 같은 ms 안에서는 1씩 증가시킨다
     ///             (표준 Snowflake 방식). ms 전환과 무관하게 그냥 누적만 시키면, "0으로 랩어라운드됐다"는
     ///             신호가 "이 ms에서 1024개를 다 썼다"는 것과 일치하지 않는 문제가 있다 — 예를 들어
@@ -25,27 +25,32 @@ namespace ShopPurchase.Core
     /// 기반으로 정확성을 우선한다. 같은 ms 안에서 Sequence(1024개)를 다 써버리면, 실제로 다음 ms가
     /// 될 때까지 lock을 잡은 채로 짧게 기다린다 — 그래서 "유저 3,000명에게 아이템 10개씩 한꺼번에
     /// 지급" 같은 벌크 생성도 호출부 수정 없이 정확하게(다만 그만큼 시간이 걸려서) 처리된다.
-    /// 다만 이 대기에는 상한(MaxClockRollbackToleranceMs)이 있다 — 부하로 인한 대기가 아니라
-    /// 시계가 실제로 몇 초 이상 뒤로 튄 것으로 보이면, lock을 무한정 잡고 있는 대신 즉시 예외를 던진다.
+    ///
+    /// 유일성이 근본적으로 깨지는 두 경우(Time 비트 공간 소진, 시계가 허용치 이상 되감김)에는
+    /// 예외가 아니라 Environment.FailFast로 프로세스를 즉시 종료시킨다 — 자세한 이유는 각 호출 지점 참고.
     ///
     /// Region/Server가 곧 서버 한 대의 정체성이므로, 서버가 다르면 상위 비트부터 값이 달라져 자동으로 유일하다.
     /// 따라서 여러 서버 x 여러 스레드가 동시에 호출해도 전역적으로 유일한 값이 나온다.
     /// </summary>
     public class JHGUIDGenerator
     {
-        private const int ServerBits = 9;                                              // 0 ~ 511
-        private const int RegionBits = 5;                                              // 0 ~ 31
-        private const int SequenceBits = 10;                                           // 0 ~ 1023
-        private const int TimeBits = 64 - RegionBits - ServerBits - SequenceBits; // 40
+        private const int ServerBits = 9;    // 0 ~ 511
+        private const int RegionBits = 5;    // 0 ~ 31
+        private const int SequenceBits = 10; // 0 ~ 1023
+        private const int TimeBits = 64 - RegionBits - ServerBits - SequenceBits;
 
         private const int MaxRegion = (1 << RegionBits) - 1;
         private const int MaxServer = (1 << ServerBits) - 1;
-        private const long MaxSequence = (1 << SequenceBits) - 1; // 1023
+        private const long MaxSequence = (1 << SequenceBits) - 1;
         private const long MaxTime = (1L << TimeBits) - 1;
 
-        private const int RegionShift = ServerBits;                                   // 9
-        private const int SequenceShift = ServerBits + RegionBits;                  // 14
-        private const int TimeShift = ServerBits + RegionBits + SequenceBits;     // 24
+        private const int RegionShift = ServerBits;
+        private const int SequenceShift = ServerBits + RegionBits;
+        private const int TimeShift = ServerBits + RegionBits + SequenceBits;
+
+        // 정상적인 "같은 ms에 1024개 몰림"은 보통 1ms 안에 풀린다. 이 값보다 더 오래 기다려야 한다면
+        // 부하가 아니라 시스템 시계가 실제로 뒤로 튄 것(NTP 스텝 보정, VM 일시정지/재개 등)으로 본다.
+        private const long MaxClockRollbackToleranceMs = 5000;
 
         // 이 생성기만의 기준 시각. 여기서부터 흐른 ms를 Time 필드로 쓴다.
         private static readonly DateTime s_epoch = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -78,7 +83,6 @@ namespace ShopPurchase.Core
 
                 if (now > m_lastTimestamp)
                 {
-                    // 새 ms로 넘어갔으면 Sequence를 0부터 다시 센다.
                     newTimestamp = now;
                     newSequence = 0;
                 }
@@ -98,13 +102,12 @@ namespace ShopPurchase.Core
 
                 if (newTimestamp > MaxTime)
                 {
-                    // GUID 유일성 보장이 근본적으로 깨진 상태다 — EErrorCode/예외로 넘겨서 그냥
-                    // 계속 돌게 두면 안 되고, 심각한 서버 장애로 기록하고 프로세스를 즉시 죽여야
-                    // 한다. Environment.FailFast는 어떤 catch(Exception)도 가로챌 수 없이
-                    // 프로세스를 바로 종료시킨다.
+                    // 유일성 보장이 근본적으로 깨진 상태라, 계속 돌게 두면 중복 ID가 DB까지 흘러간다.
+                    // FailFast는 어떤 catch(Exception)로도 가로챌 수 없다 — DBManager/JHTimingWheel의
+                    // catch가 이 장애를 EErrorCode.Exception 하나로 뭉개지 못하게 하려는 선택이다.
                     string message = "[FATAL] JHGUIDGenerator의 Time 비트 공간을 초과했습니다. GUID 유일성을 더 이상 보장할 수 없어 서버를 즉시 종료합니다.";
                     Environment.FailFast(message);
-                    throw new InvalidOperationException(message); // FailFast가 이미 프로세스를 종료시켜 도달하지 않는다.
+                    throw new InvalidOperationException(message); // FailFast가 이미 죽여서 도달하지 않는다.
                 }
 
                 m_lastTimestamp = newTimestamp;
@@ -114,13 +117,6 @@ namespace ShopPurchase.Core
             }
         }
 
-        // 정상적인 "같은 ms에 1024개 몰림"은 보통 1ms 안에 풀린다. 이 값보다 더 오래 기다려야 한다면
-        // 부하 때문이 아니라 시스템 시계가 실제로 뒤로 튄 것(NTP 스텝 보정, VM 일시정지/재개, 수동 조정
-        // 등)으로 보고, 무한정 lock을 잡은 채 멈추는 대신 즉시 프로세스를 종료시킨다 — 시계가 이 정도로
-        // 뒤로 튀었다는 건 GUID 유일성 보장이 이미 깨졌을 수 있다는 뜻이라, EErrorCode 하나로 조용히
-        // 넘기고 계속 돌게 두면 안 된다.
-        private const long MaxClockRollbackToleranceMs = 5000;
-
         private static long CurrentTimeMs() => (long)(DateTime.UtcNow - s_epoch).TotalMilliseconds;
 
         private static long WaitNextMillis(long _lastTimestamp)
@@ -129,13 +125,12 @@ namespace ShopPurchase.Core
             long rollbackMs = _lastTimestamp - now;
             if (rollbackMs > MaxClockRollbackToleranceMs)
             {
-                // Environment.FailFast는 어떤 catch(Exception)도 가로챌 수 없이 프로세스를 바로
-                // 종료시킨다 — DBManager나 JHTimingWheel의 catch가 이 심각한 장애를 EErrorCode.Exception
-                // 하나로 뭉개고 서버가 계속 도는 일이 없도록 한다.
+                // 시계가 이만큼 되감겼다는 건 이미 발급한 (Time, Sequence) 조합을 다시 낼 수 있다는
+                // 뜻이다 — 위 비트 공간 소진과 같은 급의 장애라 똑같이 프로세스를 죽인다.
                 string message = $"[FATAL] JHGUIDGenerator: 시스템 시계가 {rollbackMs}ms만큼 뒤로 흘렀습니다 " +
                     $"(허용 오차 {MaxClockRollbackToleranceMs}ms). GUID 유일성을 더 이상 보장할 수 없어 서버를 즉시 종료합니다.";
                 Environment.FailFast(message);
-                throw new InvalidOperationException(message); // FailFast가 이미 프로세스를 종료시켜 도달하지 않는다.
+                throw new InvalidOperationException(message); // FailFast가 이미 죽여서 도달하지 않는다.
             }
 
             var spinWait = new SpinWait();

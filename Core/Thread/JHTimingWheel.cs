@@ -211,10 +211,7 @@ namespace ShopPurchase.Core.Thread
         {
             lock (m_slotLock)
             {
-                // "그 슬롯의 내용물을 통째로 비우기 + 다음 슬롯으로 전진"까지 전부 이 lock 안에서
-                // 원자적으로 처리한다. 프로듀서(ScheduleDelay/Schedule)의 "현재 슬롯 읽기 + 추가하기"도
-                // 같은 lock을 쓰므로, 프로듀서가 방금 비워진(혹은 곧 비워질) 슬롯에 잘못 추가해서
-                // 한 바퀴(약 10초)를 그냥 날려버리는 경우가 없다.
+                // "비우기 + 전진"이 한 lock 안에서 원자적이어야 하는 이유는 클래스 상단 주석 참고.
                 List<Action> dueDelays = m_delaySlots[m_currentSlot];
                 if (dueDelays.Count > 0) m_delaySlots[m_currentSlot] = new List<Action>();
                 List<JHTask> dueTasks = m_slots[m_currentSlot];
@@ -273,11 +270,9 @@ namespace ShopPurchase.Core.Thread
         }
 
         /// <summary>
-        /// 새 예약을 막는 게 아니라, 호출 시점에 이미 예약돼 있던 작업을 tick 스레드가 ThreadPool에
-        /// 던지지 않고 직접(동기로) 전부 실행한 뒤에 리턴한다 — "던져놓고 끝났다고 치는" 게 아니라
-        /// 실제로 다 실행되는 것까지 보고 멈추는 거라, 완료 여부를 별도로 추적할 필요가 없다.
-        /// Stop()만 부르고 바로 프로세스가 끝나버리면 아직 실행 중인 작업이 완료 여부와 무관하게
-        /// 함께 죽어버리므로, 호출자가 진짜 끝을 기다릴 수 있도록 블로킹(Thread.Join)으로 만들었다.
+        /// tick 스레드를 멈춘다. 새 예약을 막는 게 아니라, 멈추기 전에 슬롯에 남아 있던 작업을
+        /// ThreadPool에 던지지 않고 tick 스레드가 직접(동기로) 전부 실행한다 — 종료 때문에 예약된
+        /// 일이 통째로 사라지는 걸 막기 위해서다. 그 실행이 끝날 때까지 Thread.Join으로 블로킹한다.
         /// </summary>
         public void Stop()
         {
