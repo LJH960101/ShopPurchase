@@ -41,6 +41,11 @@ namespace ShopPurchase.Core.Thread
         // key-lock 슬롯 개수 = CPU 코어 수 * 이 배수. Schedule(keys 버전)에서만 쓰인다.
         private const int m_LocksPerCore = 4;
 
+        // Stop()의 종료 드레인이 "한 바퀴 돌아도 아무것도 안 나올 때까지" 반복하는 바퀴 수의 상한.
+        // 정상적인 호출자는 드레인 도중 재예약을 하지 않으므로 보통 1바퀴로 끝난다 — 이 상한은 버그로
+        // 인한 무한 재예약이 Stop()을 영영 못 끝내게 만드는 것만 막는 안전장치다.
+        private const int m_MaxDrainRotations = 8;
+
         private readonly List<Action>[] m_delaySlots;
         private readonly List<JHTask>[] m_slots;
         private readonly object m_slotLock = new object();
@@ -176,14 +181,28 @@ namespace ShopPurchase.Core.Thread
 
             // Stop() 요청됨 — 더 이상 풀에 던지지 않고, 남아있는 슬롯을 tick 스레드가 직접(동기로)
             // 실행해서 확실하게 다 끝낸다. 실제 시간을 더 기다릴 이유가 없으니 Sleep도 하지 않는다.
-            // ComputeTicksAhead가 예약 가능한 최대 지연을 이미 "한 바퀴 이내"로 클램프해두므로,
-            // 한 바퀴(m_WheelSize번)만 돌면 호출 시점에 예약돼 있던 건 슬롯이 몇 번이든 전부 나온다.
-            for (int i = 0; i < m_WheelSize; i++)
+            //
+            // 한 바퀴(m_WheelSize번)만 돌면 호출 시점에 예약돼 있던 건 슬롯이 몇 번이든 전부 나오는 게
+            // 맞지만, 드레인 중에 실행된 액션이 그 자리에서 다시 ScheduleDelay/Schedule을 호출하면
+            // 얘기가 달라진다 — 그 새 예약은 "이번 바퀴에서 이미 지나친 슬롯"에 떨어질 수 있고, 그러면
+            // 한 바퀴만 도는 루프는 그 슬롯을 다시 안 보기 때문에 조용히 유실된다. 그래서 "한 바퀴를
+            // 다 돌았는데 아무것도 안 나왔다"가 될 때까지 바퀴를 반복한다 — 지금 코드베이스의 어떤
+            // 호출자도 드레인 도중 재예약을 하지 않으니 보통 딱 한 바퀴로 끝나지만, 병적으로 계속
+            // 재예약하는 경우에 대비해 상한(m_MaxDrainRotations바퀴)을 둔다.
+            for (int rotation = 0; rotation < m_MaxDrainRotations; rotation++)
             {
-                var (dueDelays, dueTasks) = DrainCurrentSlot();
+                bool foundAny = false;
 
-                foreach (var action in dueDelays) RunDelayAction(action);
-                foreach (var task in dueTasks) RunWithKeyLocks(task);
+                for (int i = 0; i < m_WheelSize; i++)
+                {
+                    var (dueDelays, dueTasks) = DrainCurrentSlot();
+                    if (dueDelays.Count > 0 || dueTasks.Count > 0) foundAny = true;
+
+                    foreach (var action in dueDelays) RunDelayAction(action);
+                    foreach (var task in dueTasks) RunWithKeyLocks(task);
+                }
+
+                if (!foundAny) break;
             }
         }
 
@@ -197,9 +216,9 @@ namespace ShopPurchase.Core.Thread
                 // 같은 lock을 쓰므로, 프로듀서가 방금 비워진(혹은 곧 비워질) 슬롯에 잘못 추가해서
                 // 한 바퀴(약 10초)를 그냥 날려버리는 경우가 없다.
                 List<Action> dueDelays = m_delaySlots[m_currentSlot];
-                m_delaySlots[m_currentSlot] = new List<Action>();
+                if (dueDelays.Count > 0) m_delaySlots[m_currentSlot] = new List<Action>();
                 List<JHTask> dueTasks = m_slots[m_currentSlot];
-                m_slots[m_currentSlot] = new List<JHTask>();
+                if (dueTasks.Count > 0) m_slots[m_currentSlot] = new List<JHTask>();
                 m_currentSlot = (m_currentSlot + 1) % m_WheelSize;
                 return (dueDelays, dueTasks);
             }
