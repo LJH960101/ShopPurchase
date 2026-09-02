@@ -42,11 +42,15 @@ namespace ShopPurchase.Test
             }
 
             Task.WaitAll(tasks.ToArray());
-            GuidTestHelpers.PrintDuplicateStats(bag);
+            int duplicateCount = GuidTestHelpers.PrintDuplicateStats(bag);
 
             var sample = bag.First();
             var (region, server, sequence, time) = JHGUIDGenerator.Decode(sample);
             Console.WriteLine($"샘플 디코드: id={sample} -> region={region}, server={server}, sequence={sequence}, time={time}");
+
+            Console.WriteLine(duplicateCount == 0
+                ? $"PASS: 서버 {m_ServerCount}개 × 스레드 {m_ThreadsPerServer}개 × {m_IdsPerThread}개 생성, 충돌 0건"
+                : $"FAIL: 중복 {duplicateCount}건 발생");
 
             Console.WriteLine("=== GuidGeneratorTest 완료 ===");
         }

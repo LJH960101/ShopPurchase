@@ -161,8 +161,9 @@ dotnet build
 dotnet run
 ```
 
-`Program.cs`가 아래 테스트를 순서대로 전부 실행하고 결과를 콘솔에 출력합니다 — 별도 테스트
-프레임워크는 없어서 성공/실패는 콘솔 출력으로 확인합니다.
+`Program.cs`가 아래 테스트를 순서대로 전부 실행합니다. 별도 테스트 프레임워크는 쓰지 않고,
+각 테스트가 스스로 판정해서 `PASS` 또는 `FAIL` 한 줄을 출력합니다 — 숫자를 읽는 사람이 해석해야
+하는 자리는 없습니다. `BuyTest`만은 판정 대상이 아니라 전체 흐름을 눈으로 보는 데모입니다.
 
 ## 테스트
 
@@ -188,12 +189,21 @@ dotnet run
 [Kick -> ...806803457] reason=UpdateItemFailed
 === BuyTest 완료 ===
 
+=== GuidGeneratorTest: JHGUIDGenerator (서버 x 스레드 최대 속도) ===
+생성 개수: 200000, 유일 개수: 200000, 중복 개수: 0 (0.00%)
+PASS: 서버 5개 × 스레드 8개 × 5000개 생성, 충돌 0건
+
 === BulkGrantTest: tight loop로 직접 호출 (나쁜 예) ===
 생성 개수: 30000, 유일 개수: 30000, 중복 개수: 0 (0.00%)
 실제 경과 시간: 406.90ms, 실제로 쓰인 서로 다른 Time 값 개수: 30
+PASS: 30000개 생성, 충돌 0건
 === BulkGrantTest: JHTimingWheel로 유저별 Job 분산 (좋은 예) ===
 생성 개수: 30000, 유일 개수: 30000, 중복 개수: 0 (0.00%)
 실제 경과 시간: 543.25ms, 실제로 쓰인 서로 다른 Time 값 개수: 40
+PASS: 30000개 생성, 충돌 0건
+
+=== MultiKeyScheduleTest: 다중 key 단일 실행 검증 ===
+PASS: 다중 key 작업이 정확히 한 번 실행됨
 
 === MultiKeyScheduleTest: 겹치는 key 동시 실행 방지 검증 ===
 PASS: 300개 작업 모두 겹치는 key끼리 동시 실행되지 않음

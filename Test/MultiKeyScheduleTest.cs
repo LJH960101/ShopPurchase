@@ -38,9 +38,11 @@ namespace ShopPurchase.Test
 
             bool completed = doneEvent.Wait(TimeSpan.FromSeconds(5));
 
-            Console.WriteLine(completed
-                ? $"완료: 실행 횟수={executionCount} (기대값 1)"
-                : "FAIL: 5초 안에 실행되지 않음 (데드락 의심)");
+            Console.WriteLine(!completed
+                ? "FAIL: 5초 안에 실행되지 않음 (데드락 의심)"
+                : executionCount != 1
+                    ? $"FAIL: 정확히 한 번 실행되지 않음 (실행 횟수={executionCount}, 기대값 1)"
+                    : "PASS: 다중 key 작업이 정확히 한 번 실행됨");
 
             Console.WriteLine("=== 단일 실행 검증 완료 ===");
         }

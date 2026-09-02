@@ -96,9 +96,14 @@ namespace ShopPurchase.Test
 
         private static void PrintStats(IReadOnlyCollection<GUID> _ids, TimeSpan _elapsed)
         {
-            GuidTestHelpers.PrintDuplicateStats(_ids);
+            int duplicateCount = GuidTestHelpers.PrintDuplicateStats(_ids);
             int distinctTimeValues = _ids.Select(id => JHGUIDGenerator.Decode(id).Time).Distinct().Count();
             Console.WriteLine($"실제 경과 시간: {_elapsed.TotalMilliseconds:F2}ms, 실제로 쓰인 서로 다른 Time 값 개수: {distinctTimeValues}");
+
+            // 두 방식 모두 "느려질지언정 충돌은 없다"가 핵심이라, 판정 기준은 양쪽 다 중복 0건이다.
+            Console.WriteLine(duplicateCount == 0
+                ? $"PASS: {_ids.Count}개 생성, 충돌 0건"
+                : $"FAIL: 중복 {duplicateCount}건 발생");
         }
     }
 }
