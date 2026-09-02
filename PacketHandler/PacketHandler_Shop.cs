@@ -1,5 +1,4 @@
 using ShopPurchase.Common;
-using ShopPurchase.Core.Thread;
 using ShopPurchase.Data;
 using ShopPurchase.DB;
 using ShopPurchase.Network;
