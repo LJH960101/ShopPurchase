@@ -14,12 +14,12 @@ namespace ShopPurchase.Test
     /// </summary>
     public static class MultiKeyScheduleTest
     {
-        private const int m_KeyCount = 5;
-        private const int m_TaskCount = 300;
+        private const int KeyCount = 5;
+        private const int TaskCount = 300;
 
         // 첫 실행 이후 "혹시 한 번 더 실행되지 않는지" 지켜보는 시간. 휠의 tick 간격(10ms)보다
         // 충분히 길게 잡아서, 다음 tick에 중복 실행이 오더라도 판정 전에 잡히도록 한다.
-        private const int m_DuplicateWatchMs = 100;
+        private const int DuplicateWatchMs = 100;
 
         public static void Run()
         {
@@ -45,7 +45,7 @@ namespace ShopPurchase.Test
             // doneEvent는 "첫 실행"이 끝나는 순간 풀리므로, 여기서 바로 executionCount를 읽으면
             // 중복 실행이 있어도 아직 안 일어났을 수 있다 — 정확히 이 테스트가 잡아야 하는 버그를
             // 관측할 시간이 없는 셈이다. 휠의 tick 간격(10ms)보다 넉넉히 기다린 뒤에 판정한다.
-            if (completed) Thread.Sleep(m_DuplicateWatchMs);
+            if (completed) Thread.Sleep(DuplicateWatchMs);
 
             Console.WriteLine(!completed
                 ? "FAIL: 5초 안에 실행되지 않음 (데드락 의심)"
@@ -60,15 +60,15 @@ namespace ShopPurchase.Test
         {
             Console.WriteLine("=== MultiKeyScheduleTest: 겹치는 key 동시 실행 방지 검증 ===");
 
-            var keys = new GUID[m_KeyCount];
-            for (int i = 0; i < m_KeyCount; i++) keys[i] = (GUID)i;
+            var keys = new GUID[KeyCount];
+            for (int i = 0; i < KeyCount; i++) keys[i] = (GUID)i;
 
-            var busy = new int[m_KeyCount];
+            var busy = new int[KeyCount];
             var random = new Random();
             var violationDetected = false;
-            var doneEvents = new ManualResetEventSlim[m_TaskCount];
+            var doneEvents = new ManualResetEventSlim[TaskCount];
 
-            for (int t = 0; t < m_TaskCount; t++)
+            for (int t = 0; t < TaskCount; t++)
             {
                 doneEvents[t] = new ManualResetEventSlim(false);
                 var doneEvent = doneEvents[t];
@@ -76,7 +76,7 @@ namespace ShopPurchase.Test
                 // 이 작업이 건드릴 key 2~3개를 무작위로 고른다 (겹치는 조합이 자주 나오게).
                 var indexSet = new HashSet<int>();
                 int wantCount = random.Next(2, 4);
-                while (indexSet.Count < wantCount) indexSet.Add(random.Next(m_KeyCount));
+                while (indexSet.Count < wantCount) indexSet.Add(random.Next(KeyCount));
 
                 var taskIndices = new List<int>(indexSet);
                 var taskKeys = new GUID[taskIndices.Count];
@@ -110,7 +110,7 @@ namespace ShopPurchase.Test
                 ? "FAIL: 10초 안에 끝나지 않은 작업이 있음 (데드락 의심)"
                 : violationDetected
                     ? "FAIL: 겹치는 key를 가진 작업이 동시에 실행됨"
-                    : $"PASS: {m_TaskCount}개 작업 모두 겹치는 key끼리 동시 실행되지 않음");
+                    : $"PASS: {TaskCount}개 작업 모두 겹치는 key끼리 동시 실행되지 않음");
 
             Console.WriteLine("=== 동시 실행 방지 검증 완료 ===");
         }

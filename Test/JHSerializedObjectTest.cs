@@ -14,7 +14,7 @@ namespace ShopPurchase.Test
     /// - 콜백이 유실되지 않고 요청한 만큼 전부 완료되는지 (락 없이 체인만으로 끝까지 이어지는지)
     /// - 제한 시간 안에 전부 끝나는지 (데드락/라이브락 없는지)
     ///
-    /// 적은 수의 객체(m_ObjectCount)에 많은 스레드(m_ProducerThreadCount)를 동시에 몰아붙여서
+    /// 적은 수의 객체(ObjectCount)에 많은 스레드(ProducerThreadCount)를 동시에 몰아붙여서
     /// 객체 하나당 경합이 최대한 심해지도록 만든다. Post/Reserve를 무작위로 섞어서 호출한다.
     /// </summary>
     public static class JHSerializedObjectTest
@@ -28,34 +28,34 @@ namespace ShopPurchase.Test
             public void DoReserve(int _delayMs, Action _action) => Reserve(_delayMs, _action);
         }
 
-        private const int m_ObjectCount = 4;
-        private const int m_ProducerThreadCount = 50;
-        private const int m_CallsPerThread = 250; // 총 4 * 50 * 250 = 50,000회
+        private const int ObjectCount = 4;
+        private const int ProducerThreadCount = 50;
+        private const int CallsPerThread = 250; // 총 4 * 50 * 250 = 50,000회
 
         public static void Run()
         {
             Console.WriteLine("=== JHSerializedObjectTest: Post/Reserve lock-free 직렬화 극한 검증 ===");
 
-            var targets = new DummySerialized[m_ObjectCount];
-            var busy = new int[m_ObjectCount];
-            var completedCounts = new int[m_ObjectCount];
-            for (int i = 0; i < m_ObjectCount; i++) targets[i] = new DummySerialized((GUID)i);
+            var targets = new DummySerialized[ObjectCount];
+            var busy = new int[ObjectCount];
+            var completedCounts = new int[ObjectCount];
+            for (int i = 0; i < ObjectCount; i++) targets[i] = new DummySerialized((GUID)i);
 
-            int totalCalls = m_ObjectCount * m_ProducerThreadCount * m_CallsPerThread;
+            int totalCalls = ObjectCount * ProducerThreadCount * CallsPerThread;
             bool violationDetected = false;
             var doneEvent = new CountdownEvent(totalCalls);
             var threads = new List<System.Threading.Thread>();
 
-            for (int objIndex = 0; objIndex < m_ObjectCount; objIndex++)
+            for (int objIndex = 0; objIndex < ObjectCount; objIndex++)
             {
                 int capturedObjIndex = objIndex;
 
-                for (int t = 0; t < m_ProducerThreadCount; t++)
+                for (int t = 0; t < ProducerThreadCount; t++)
                 {
                     var thread = new System.Threading.Thread(() =>
                     {
                         var localRandom = new Random();
-                        for (int c = 0; c < m_CallsPerThread; c++)
+                        for (int c = 0; c < CallsPerThread; c++)
                         {
                             Action work = () =>
                             {
@@ -87,7 +87,7 @@ namespace ShopPurchase.Test
             stopwatch.Stop();
 
             int totalCompleted = 0;
-            for (int i = 0; i < m_ObjectCount; i++) totalCompleted += completedCounts[i];
+            for (int i = 0; i < ObjectCount; i++) totalCompleted += completedCounts[i];
 
             Console.WriteLine($"총 요청: {totalCalls}, 총 완료: {totalCompleted}, 경과: {stopwatch.ElapsedMilliseconds}ms");
             Console.WriteLine(!completedInTime

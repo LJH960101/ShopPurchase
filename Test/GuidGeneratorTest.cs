@@ -13,9 +13,9 @@ namespace ShopPurchase.Test
     /// </summary>
     public static class GuidGeneratorTest
     {
-        private const int m_ServerCount = 5;
-        private const int m_ThreadsPerServer = 8;
-        private const int m_IdsPerThread = 5000;
+        private const int ServerCount = 5;
+        private const int ThreadsPerServer = 8;
+        private const int IdsPerThread = 5000;
 
         public static void Run()
         {
@@ -24,16 +24,16 @@ namespace ShopPurchase.Test
             var bag = new ConcurrentBag<GUID>();
             var tasks = new List<Task>();
 
-            for (int serverIndex = 0; serverIndex < m_ServerCount; serverIndex++)
+            for (int serverIndex = 0; serverIndex < ServerCount; serverIndex++)
             {
                 // 서버 한 대 = region/server 조합 하나 = JHGUIDGenerator 인스턴스 하나.
                 var generator = new JHGUIDGenerator(_region: 1, _server: serverIndex);
 
-                for (int t = 0; t < m_ThreadsPerServer; t++)
+                for (int t = 0; t < ThreadsPerServer; t++)
                 {
                     tasks.Add(Task.Run(() =>
                     {
-                        for (int i = 0; i < m_IdsPerThread; i++)
+                        for (int i = 0; i < IdsPerThread; i++)
                         {
                             bag.Add(generator.Next());
                         }
@@ -49,7 +49,7 @@ namespace ShopPurchase.Test
             Console.WriteLine($"샘플 디코드: id={sample} -> region={region}, server={server}, sequence={sequence}, time={time}");
 
             Console.WriteLine(duplicateCount == 0
-                ? $"PASS: 서버 {m_ServerCount}개 × 스레드 {m_ThreadsPerServer}개 × {m_IdsPerThread}개 생성, 충돌 0건"
+                ? $"PASS: 서버 {ServerCount}개 × 스레드 {ThreadsPerServer}개 × {IdsPerThread}개 생성, 충돌 0건"
                 : $"FAIL: 중복 {duplicateCount}건 발생");
 
             Console.WriteLine("=== GuidGeneratorTest 완료 ===");

@@ -25,16 +25,16 @@ namespace ShopPurchase.DB
     {
         public static readonly DBManager Instance = new DBManager();
 
-        private const double m_ConnectionFailureRate = 0.05;
-        private const double m_InsertFailureRate = 0.05;
-        private const double m_UpdateFailureRate = 0.05;
+        private const double ConnectionFailureRate = 0.05;
+        private const double InsertFailureRate = 0.05;
+        private const double UpdateFailureRate = 0.05;
 
         // 가짜 DB row/tran ID 발급용. 실제 DB가 아니라 진짜 GUID 채번이 필요한 건 아니지만,
         // System.Guid 대신 우리가 만든 JHGUIDGenerator로 통일해서 쓴다.
-        private static readonly JHGUIDGenerator m_idGenerator = new JHGUIDGenerator(_region: 1, _server: 1);
+        private static readonly JHGUIDGenerator s_idGenerator = new JHGUIDGenerator(_region: 1, _server: 1);
 
         // 영수증 중복 사용 방지. 여러 스레드가 동시에 건드릴 수 있어 lock-free 자료구조를 쓴다.
-        private static readonly ConcurrentDictionary<string, byte> m_consumedReceipts = new ConcurrentDictionary<string, byte>();
+        private static readonly ConcurrentDictionary<string, byte> s_consumedReceipts = new ConcurrentDictionary<string, byte>();
 
         private DBManager()
         {
@@ -62,15 +62,15 @@ namespace ShopPurchase.DB
             {
                 try
                 {
-                    if (!m_consumedReceipts.TryAdd(_receipt, 0))
+                    if (!s_consumedReceipts.TryAdd(_receipt, 0))
                     {
                         job.Reject(EErrorCode.ReceiptAlreadyInserted);
                         return;
                     }
 
-                    if (Random.Shared.NextDouble() < m_ConnectionFailureRate)
+                    if (Random.Shared.NextDouble() < ConnectionFailureRate)
                     {
-                        m_consumedReceipts.TryRemove(_receipt, out _);
+                        s_consumedReceipts.TryRemove(_receipt, out _);
                         job.Reject(EErrorCode.DBConnectionFailed);
                         return;
                     }
@@ -81,7 +81,7 @@ namespace ShopPurchase.DB
                     if (receiptErrorCode != EErrorCode.Success)
                     {
                         RollbackTran(tran);
-                        m_consumedReceipts.TryRemove(_receipt, out _);
+                        s_consumedReceipts.TryRemove(_receipt, out _);
                         job.Reject(receiptErrorCode);
                         return;
                     }
@@ -90,7 +90,7 @@ namespace ShopPurchase.DB
                     if (itemErrorCode != EErrorCode.Success)
                     {
                         RollbackTran(tran);
-                        m_consumedReceipts.TryRemove(_receipt, out _);
+                        s_consumedReceipts.TryRemove(_receipt, out _);
                         job.Reject(itemErrorCode);
                         return;
                     }
@@ -107,7 +107,7 @@ namespace ShopPurchase.DB
                     // 의심하고 끊는다"로 단순하게 간다. 실제 DB로 교체되면 이 지점에서 커밋 여부를
                     // 정말로 구분해야 할 수 있다.
                     Console.WriteLine($"[DBManager] InsertShopReceipt에서 처리 안 된 예외: {ex}");
-                    m_consumedReceipts.TryRemove(_receipt, out _);
+                    s_consumedReceipts.TryRemove(_receipt, out _);
                     job.Reject(EErrorCode.Exception);
                 }
             });
@@ -115,7 +115,7 @@ namespace ShopPurchase.DB
             return job;
         }
 
-        private DBTransaction BeginTran() => new DBTransaction(m_idGenerator.Next());
+        private DBTransaction BeginTran() => new DBTransaction(s_idGenerator.Next());
 
         private void EndTran(DBTransaction _tran)
         {
@@ -129,15 +129,15 @@ namespace ShopPurchase.DB
 
         private (EErrorCode ErrorCode, ShopReceiptData Value) SP_InsertShopReceipt(DBTransaction _tran, string _receipt)
         {
-            if (Random.Shared.NextDouble() < m_InsertFailureRate)
+            if (Random.Shared.NextDouble() < InsertFailureRate)
                 return (EErrorCode.InsertReceiptFailed, null);
 
-            return (EErrorCode.Success, new ShopReceiptData(m_idGenerator.Next(), _receipt));
+            return (EErrorCode.Success, new ShopReceiptData(s_idGenerator.Next(), _receipt));
         }
 
         private (EErrorCode ErrorCode, RewardData Value) SP_InsertItem(DBTransaction _tran, RewardData _reward)
         {
-            if (Random.Shared.NextDouble() < m_UpdateFailureRate)
+            if (Random.Shared.NextDouble() < UpdateFailureRate)
                 return (EErrorCode.UpdateItemFailed, null);
 
             // 실제 SP라면 여기서 인벤토리 테이블에 _reward를 반영하고, 반영된 결과를 돌려준다.

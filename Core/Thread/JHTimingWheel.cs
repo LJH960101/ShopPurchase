@@ -24,7 +24,7 @@ namespace ShopPurchase.Core.Thread
     ///   해야 한다 (JHSerializedObject.Reserve가 자기 Post를 호출하는 식으로 쓴다).
     /// - Schedule/ScheduleJob(keys 버전): 여러 key에 걸친 작업(예: 거래처럼 둘 이상의 PlayerKey를
     ///   동시에 건드리는 처리)을 위한 저수준 API로 남겨둔다. key-lock은 key마다 무한정 늘어나는
-    ///   딕셔너리가 아니라 (CPU 코어 수 * m_LocksPerCore)개의 고정 크기 배열로 처음부터 전부
+    ///   딕셔너리가 아니라 (CPU 코어 수 * LocksPerCore)개의 고정 크기 배열로 처음부터 전부
     ///   만들어두고, key는 해시값을 배열 크기로 나눈 나머지(스트라이프)로 슬롯을 찾는다. 서로 다른
     ///   key가 같은 슬롯으로 충돌하면 상관없는 사이인데도 서로 직렬화되는 오탐 대기가 생길 수 있다 —
     ///   lock striping의 정상적인 트레이드오프다.
@@ -35,16 +35,16 @@ namespace ShopPurchase.Core.Thread
     {
         public static readonly JHTimingWheel Instance = new JHTimingWheel();
 
-        private const int m_TickIntervalMs = 10;
-        private const int m_WheelSize = 1024; // 10ms * 1024 = 약 10.24초까지 한 바퀴 안에 스케줄 가능
+        private const int TickIntervalMs = 10;
+        private const int WheelSize = 1024; // 10ms * 1024 = 약 10.24초까지 한 바퀴 안에 스케줄 가능
 
         // key-lock 슬롯 개수 = CPU 코어 수 * 이 배수. Schedule(keys 버전)에서만 쓰인다.
-        private const int m_LocksPerCore = 4;
+        private const int LocksPerCore = 4;
 
         // Stop()의 종료 드레인이 "한 바퀴 돌아도 아무것도 안 나올 때까지" 반복하는 바퀴 수의 상한.
         // 정상적인 호출자는 드레인 도중 재예약을 하지 않으므로 보통 1바퀴로 끝난다 — 이 상한은 버그로
         // 인한 무한 재예약이 Stop()을 영영 못 끝내게 만드는 것만 막는 안전장치다.
-        private const int m_MaxDrainRotations = 8;
+        private const int MaxDrainRotations = 8;
 
         private readonly List<Action>[] m_delaySlots;
         private readonly List<JHTask>[] m_slots;
@@ -71,15 +71,15 @@ namespace ShopPurchase.Core.Thread
 
         private JHTimingWheel()
         {
-            m_delaySlots = new List<Action>[m_WheelSize];
-            m_slots = new List<JHTask>[m_WheelSize];
-            for (int i = 0; i < m_WheelSize; i++)
+            m_delaySlots = new List<Action>[WheelSize];
+            m_slots = new List<JHTask>[WheelSize];
+            for (int i = 0; i < WheelSize; i++)
             {
                 m_delaySlots[i] = new List<Action>();
                 m_slots[i] = new List<JHTask>();
             }
 
-            int lockCount = Math.Max(1, Environment.ProcessorCount * m_LocksPerCore);
+            int lockCount = Math.Max(1, Environment.ProcessorCount * LocksPerCore);
             m_keyLocks = new KeyLock[lockCount];
             for (int i = 0; i < lockCount; i++) m_keyLocks[i] = new KeyLock();
 
@@ -102,7 +102,7 @@ namespace ShopPurchase.Core.Thread
             int ticksAhead = ComputeTicksAhead(_delayMs);
             lock (m_slotLock)
             {
-                int targetSlot = (m_currentSlot + ticksAhead) % m_WheelSize;
+                int targetSlot = (m_currentSlot + ticksAhead) % WheelSize;
                 m_delaySlots[targetSlot].Add(_action);
             }
         }
@@ -121,7 +121,7 @@ namespace ShopPurchase.Core.Thread
 
             lock (m_slotLock)
             {
-                int targetSlot = (m_currentSlot + ticksAhead) % m_WheelSize;
+                int targetSlot = (m_currentSlot + ticksAhead) % WheelSize;
                 m_slots[targetSlot].Add(new JHTask { LockIndices = lockIndices, Action = _action });
             }
         }
@@ -152,8 +152,8 @@ namespace ShopPurchase.Core.Thread
         private int ComputeTicksAhead(int _delayMs)
         {
             int delayMs = _delayMs < 0 ? 0 : _delayMs;
-            int ticksAhead = delayMs / m_TickIntervalMs;
-            if (ticksAhead >= m_WheelSize) ticksAhead = m_WheelSize - 1; // 포트폴리오 범위이므로 단일 랩으로 클램프
+            int ticksAhead = delayMs / TickIntervalMs;
+            if (ticksAhead >= WheelSize) ticksAhead = WheelSize - 1; // 포트폴리오 범위이므로 단일 랩으로 클램프
             return ticksAhead;
         }
 
@@ -163,7 +163,7 @@ namespace ShopPurchase.Core.Thread
         {
             while (!m_stopRequested)
             {
-                System.Threading.Thread.Sleep(m_TickIntervalMs);
+                System.Threading.Thread.Sleep(TickIntervalMs);
 
                 var (dueDelays, dueTasks) = DrainCurrentSlot();
 
@@ -182,18 +182,18 @@ namespace ShopPurchase.Core.Thread
             // Stop() 요청됨 — 더 이상 풀에 던지지 않고, 남아있는 슬롯을 tick 스레드가 직접(동기로)
             // 실행해서 확실하게 다 끝낸다. 실제 시간을 더 기다릴 이유가 없으니 Sleep도 하지 않는다.
             //
-            // 한 바퀴(m_WheelSize번)만 돌면 호출 시점에 예약돼 있던 건 슬롯이 몇 번이든 전부 나오는 게
+            // 한 바퀴(WheelSize번)만 돌면 호출 시점에 예약돼 있던 건 슬롯이 몇 번이든 전부 나오는 게
             // 맞지만, 드레인 중에 실행된 액션이 그 자리에서 다시 ScheduleDelay/Schedule을 호출하면
             // 얘기가 달라진다 — 그 새 예약은 "이번 바퀴에서 이미 지나친 슬롯"에 떨어질 수 있고, 그러면
             // 한 바퀴만 도는 루프는 그 슬롯을 다시 안 보기 때문에 조용히 유실된다. 그래서 "한 바퀴를
             // 다 돌았는데 아무것도 안 나왔다"가 될 때까지 바퀴를 반복한다 — 지금 코드베이스의 어떤
             // 호출자도 드레인 도중 재예약을 하지 않으니 보통 딱 한 바퀴로 끝나지만, 병적으로 계속
-            // 재예약하는 경우에 대비해 상한(m_MaxDrainRotations바퀴)을 둔다.
-            for (int rotation = 0; rotation < m_MaxDrainRotations; rotation++)
+            // 재예약하는 경우에 대비해 상한(MaxDrainRotations바퀴)을 둔다.
+            for (int rotation = 0; rotation < MaxDrainRotations; rotation++)
             {
                 bool foundAny = false;
 
-                for (int i = 0; i < m_WheelSize; i++)
+                for (int i = 0; i < WheelSize; i++)
                 {
                     var (dueDelays, dueTasks) = DrainCurrentSlot();
                     if (dueDelays.Count > 0 || dueTasks.Count > 0) foundAny = true;
@@ -219,7 +219,7 @@ namespace ShopPurchase.Core.Thread
                 if (dueDelays.Count > 0) m_delaySlots[m_currentSlot] = new List<Action>();
                 List<JHTask> dueTasks = m_slots[m_currentSlot];
                 if (dueTasks.Count > 0) m_slots[m_currentSlot] = new List<JHTask>();
-                m_currentSlot = (m_currentSlot + 1) % m_WheelSize;
+                m_currentSlot = (m_currentSlot + 1) % WheelSize;
                 return (dueDelays, dueTasks);
             }
         }

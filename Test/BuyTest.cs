@@ -14,7 +14,7 @@ namespace ShopPurchase.Test
     /// </summary>
     public static class BuyTest
     {
-        private static readonly JHGUIDGenerator m_guidGenerator = new JHGUIDGenerator(_region: 1, _server: 1);
+        private static readonly JHGUIDGenerator s_guidGenerator = new JHGUIDGenerator(_region: 1, _server: 1);
 
         /// <summary>한 건의 구매 요청 시나리오. 모킹 영수증 형식은 "{플랫폼 토큰}-{상품 ID}"다.</summary>
         private class BuyCase
@@ -33,7 +33,7 @@ namespace ShopPurchase.Test
             }
         }
 
-        private static readonly BuyCase[] m_cases =
+        private static readonly BuyCase[] s_cases =
         {
             new BuyCase(EPlatform.GooglePlay, "1111-1000", 1000, "정상 구매"),
             new BuyCase(EPlatform.AppStore,   "2222-1001", 1001, "정상 구매"),
@@ -47,12 +47,12 @@ namespace ShopPurchase.Test
 
         public static void Run()
         {
-            Console.WriteLine($"=== BuyTest: 상점 구매 {m_cases.Length}회 실행 ===");
+            Console.WriteLine($"=== BuyTest: 상점 구매 {s_cases.Length}회 실행 ===");
 
-            for (int i = 0; i < m_cases.Length; i++)
+            for (int i = 0; i < s_cases.Length; i++)
             {
-                var buyCase = m_cases[i];
-                var player = new Player(m_guidGenerator.Next(), buyCase.Platform);
+                var buyCase = s_cases[i];
+                var player = new Player(s_guidGenerator.Next(), buyCase.Platform);
 
                 var packet = new C2P_RequestShopBuy
                 {

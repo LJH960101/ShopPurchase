@@ -20,8 +20,8 @@ namespace ShopPurchase.Test
     /// </summary>
     public static class BulkGrantTest
     {
-        private const int m_PlayerCount = 3000;
-        private const int m_ItemsPerPlayer = 10;
+        private const int PlayerCount = 3000;
+        private const int ItemsPerPlayer = 10;
 
         public static void Run()
         {
@@ -34,12 +34,12 @@ namespace ShopPurchase.Test
             Console.WriteLine("=== BulkGrantTest: tight loop로 직접 호출 (나쁜 예) ===");
 
             var generator = new JHGUIDGenerator(_region: 1, _server: 1);
-            var ids = new List<GUID>(m_PlayerCount * m_ItemsPerPlayer);
+            var ids = new List<GUID>(PlayerCount * ItemsPerPlayer);
 
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            for (int p = 0; p < m_PlayerCount; p++)
+            for (int p = 0; p < PlayerCount; p++)
             {
-                for (int i = 0; i < m_ItemsPerPlayer; i++)
+                for (int i = 0; i < ItemsPerPlayer; i++)
                 {
                     ids.Add(generator.Next());
                 }
@@ -60,7 +60,7 @@ namespace ShopPurchase.Test
             var doneEvents = new List<ManualResetEventSlim>();
 
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-            for (int p = 0; p < m_PlayerCount; p++)
+            for (int p = 0; p < PlayerCount; p++)
             {
                 GUID playerGuid = playerGuidGenerator.Next();
                 var doneEvent = new ManualResetEventSlim(false);
@@ -71,7 +71,7 @@ namespace ShopPurchase.Test
                 // 30,000번의 Next() 호출이 여러 스레드와 실제 ms에 걸쳐 자연스럽게 퍼진다.
                 JHTimingWheel.Instance.Schedule(0, new[] { playerGuid }, () =>
                 {
-                    for (int i = 0; i < m_ItemsPerPlayer; i++)
+                    for (int i = 0; i < ItemsPerPlayer; i++)
                     {
                         bag.Add(generator.Next());
                     }

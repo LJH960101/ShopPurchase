@@ -154,6 +154,21 @@ PacketHandler/         PacketHandler_Shop — 전체 흐름을 엮는 지점
 Test/                  스트레스 테스트 + 엔드투엔드 스모크 테스트 (아래 참고)
 ```
 
+## 코드 컨벤션
+
+C# 표준(`_camelCase` 필드, 프로퍼티) 대신 C++/언리얼 계열 게임 서버 컨벤션을 따랐습니다.
+다만 접두사가 실제 의미와 어긋나지 않도록 세 가지로 갈라 씁니다.
+
+| 대상 | 표기 | 예 |
+|---|---|---|
+| 상수(`const`) | 접두사 없이 PascalCase | `WheelSize`, `MaxDrainRotations` |
+| `static` 필드 | `s_camelCase` | `s_idGenerator`, `s_consumedReceipts` |
+| 인스턴스 필드 | `m_camelCase` | `m_currentSlot`, `m_slotLock` |
+| 메서드 파라미터 | `_camelCase` | `_delayMs`, `_keys` |
+
+`m_`은 "멤버 필드"라는 뜻이라 컴파일 타임 상수나 static에 붙이면 접두사가 거짓말을 하게 됩니다.
+그래서 상수는 접두사를 떼고, static은 `s_`로 구분했습니다.
+
 ## 실행 방법
 
 ```bash
