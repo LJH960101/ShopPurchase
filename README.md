@@ -76,7 +76,7 @@ PacketHandler_Shop.C2P_RequestShopBuy
 | 타입 | 역할 |
 |---|---|
 | `JHJob<T>` | 커스텀 Promise. `Then`/`Catch` 체이닝, 실패는 `Exception`이 아니라 `EErrorCode`로 전파. |
-| `JHTimingWheel` | 모든 시뮬레이션 지연을 처리하는 tick 기반(10ms × 1024슬롯) 스케줄러. lock striping을 적용한 저수준 다중 key 락 프리미티브(`Schedule`/`ScheduleJob`)도 함께 제공. |
+| `JHTimingWheel` | 모든 시뮬레이션 지연을 처리하는 tick 기반(10ms × 1024슬롯) 스케줄러. lock striping을 적용한 저수준 다중 key 락 프리미티브(`Schedule`)도 함께 제공. |
 | `JHSerializedObject` | "한 번에 하나씩, 순서대로" 처리가 필요한 객체(예: `Player`)의 기반 클래스 — `Monitor` 락이 아니라 `Interlocked.Exchange`로 `Task` 체인을 갈아끼우는 lock-free 방식. |
 | `JHGUIDGenerator` | Snowflake 방식의 64bit ID 생성기(Time/Sequence/Region/Server 비트 패킹), 의도적으로 lock 기반. |
 

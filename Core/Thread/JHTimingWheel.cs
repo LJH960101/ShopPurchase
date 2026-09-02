@@ -22,7 +22,7 @@ namespace ShopPurchase.Core.Thread
     ///
     /// - ScheduleDelay: delayMs 뒤에 action을 그냥 실행한다. 직렬화가 필요하면 호출자가 알아서
     ///   해야 한다 (JHSerializedObject.Reserve가 자기 Post를 호출하는 식으로 쓴다).
-    /// - Schedule/ScheduleJob(keys 버전): 여러 key에 걸친 작업(예: 거래처럼 둘 이상의 PlayerKey를
+    /// - Schedule(keys 버전): 여러 key에 걸친 작업(예: 거래처럼 둘 이상의 PlayerKey를
     ///   동시에 건드리는 처리)을 위한 저수준 API로 남겨둔다. key-lock은 key마다 무한정 늘어나는
     ///   딕셔너리가 아니라 (CPU 코어 수 * LocksPerCore)개의 고정 크기 배열로 처음부터 전부
     ///   만들어두고, key는 해시값을 배열 크기로 나눈 나머지(스트라이프)로 슬롯을 찾는다. 서로 다른
@@ -130,29 +130,6 @@ namespace ShopPurchase.Core.Thread
                 int targetSlot = (m_currentSlot + ticksAhead) % WheelSize;
                 m_slots[targetSlot].Add(new JHTask { LockIndices = lockIndices, Action = _action });
             }
-        }
-
-        /// <summary>
-        /// delayMs 뒤에 work를 실행하고 그 결과를 JHJob으로 돌려준다. work가 예상 못한 예외를 던지면
-        /// 여기서 잡아서 에러 로그를 남기고 EErrorCode.Exception으로 reject한다.
-        /// </summary>
-        public JHJob<T> ScheduleJob<T>(int _delayMs, GUID[] _keys, Func<T> _work)
-        {
-            var job = new JHJob<T>();
-            Schedule(_delayMs, _keys, () =>
-            {
-                try
-                {
-                    T result = _work();
-                    job.Resolve(result);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[JHTimingWheel] ScheduleJob work에서 처리 안 된 예외: {ex}");
-                    job.Reject(EErrorCode.Exception);
-                }
-            });
-            return job;
         }
 
         private int ComputeTicksAhead(int _delayMs)
