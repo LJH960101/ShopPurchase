@@ -12,8 +12,8 @@ namespace ShopPurchase.PacketHandler
     {
         public static void C2P_RequestShopBuy(Player _player, C2P_RequestShopBuy _packet)
         {
-            var product_record = DataManager.Instance.GetProductTable(_packet.ProductId);
-            if (product_record == null)
+            var productRecord = DataManager.Instance.GetProductTable(_packet.ProductId);
+            if (productRecord == null)
             {
                 var response = new P2C_ResultShopBuy(EErrorCode.InvalidParam, null);
                 _player.Send(response);
@@ -27,7 +27,7 @@ namespace ShopPurchase.PacketHandler
             // 처리되고, 그 결과(_result.AddItemDBData)를 메모리에 반영하는 것도 이 체인 안에서
             // _player.Post로 다시 감싸서 처리한다 — 그래야 그 시점의 "현재" 메모리 상태 기준으로 더해진다.
             PlatformManager.Instance.Verify(_player.GetPlatformType(), _packet.Receipt)
-                .Then(_ => DBManager.Instance.InsertShopReceipt(_player.GetGUID(), _packet.Receipt, product_record))
+                .Then(_ => DBManager.Instance.InsertShopReceipt(_player.GetGUID(), _packet.Receipt, productRecord))
                 .Then(_result =>
                 {
                     _player.Post(() =>
