@@ -8,6 +8,7 @@ namespace ShopPurchase.Common
         UnsupportedPlatform,
         InvalidParam,
         ReceiptVerifyFailed,
+        ReceiptProductMismatch,
         ReceiptAlreadyInserted,
         DBConnectionFailed,
         InsertReceiptFailed,

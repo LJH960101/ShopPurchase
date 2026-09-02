@@ -25,7 +25,7 @@ namespace ShopPurchase.Data
         }
 
         /// <summary>등록 안 된 상품이면 null.</summary>
-        public ProductRecord GetProductTable(int _productId)
+        public ProductRecord GetProduct(int _productId)
         {
             return m_products.TryGetValue(_productId, out var record) ? record : null;
         }

@@ -1,10 +1,8 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using ShopPurchase.Common;
 using ShopPurchase.Core;
 using ShopPurchase.Core.Thread;
-using ShopPurchase.Data;
 
 namespace ShopPurchase.DB
 {
@@ -47,11 +45,15 @@ namespace ShopPurchase.DB
         /// JHJob으로 돌려준다. 이 결과의 AddItemDBData를 그대로 메모리 반영(Player.ApplyDBItemContext)에
         /// 써야 한다 — 메모리 쪽에서 보상을 다시 계산하면 DB와 메모리가 어긋날 수 있다.
         ///
+        /// 지급할 보상(_reward)은 이미 환산된 상태로 받는다 — 여기서 상품 테이블을 다시 조회해
+        /// 환산하지 않는다. 무엇을 줄지는 상품 정의(ProductRecord.GetReward)가 정하고, 이 계층은
+        /// 그걸 트랜잭션 안에서 확정하는 일만 한다.
+        ///
         /// 중복 체크(TryAdd)는 BeginTran보다 먼저, 트랜잭션 시작 전에 한다 — 같은 영수증으로 동시에
         /// 두 요청이 들어와도 하나만 통과시키기 위한 것으로, 이걸 트랜잭션 완료 후로 미루면 두 요청이
         /// 둘 다 통과해서 아이템이 두 번 지급되는 레이스가 생긴다.
         /// </summary>
-        public JHJob<InsertShopReceiptResult> InsertShopReceipt(GUID _playerGuid, string _receipt, ProductRecord _product)
+        public JHJob<InsertShopReceiptResult> InsertShopReceipt(GUID _playerGuid, string _receipt, RewardData _reward)
         {
             int delay = Random.Shared.Next(20, 100);
             var job = new JHJob<InsertShopReceiptResult>();
@@ -84,7 +86,7 @@ namespace ShopPurchase.DB
                         return;
                     }
 
-                    var (itemErrorCode, rewardResult) = SP_InsertItem(tran, _product);
+                    var (itemErrorCode, rewardResult) = SP_InsertItem(tran, _reward);
                     if (itemErrorCode != EErrorCode.Success)
                     {
                         RollbackTran(tran);
@@ -133,15 +135,13 @@ namespace ShopPurchase.DB
             return (EErrorCode.Success, new ShopReceiptData(m_idGenerator.Next(), _receipt));
         }
 
-        private (EErrorCode ErrorCode, RewardData Value) SP_InsertItem(DBTransaction _tran, ProductRecord _product)
+        private (EErrorCode ErrorCode, RewardData Value) SP_InsertItem(DBTransaction _tran, RewardData _reward)
         {
             if (Random.Shared.NextDouble() < m_UpdateFailureRate)
                 return (EErrorCode.UpdateItemFailed, null);
 
-            var items = new List<ItemData> { new ItemData(_product.ItemId, _product.ItemCount) };
-            var currencies = new List<CurrencyData> { new CurrencyData(ECurrencyType.Gold, _product.GoldReward) };
-
-            return (EErrorCode.Success, new RewardData(items, currencies));
+            // 실제 SP라면 여기서 인벤토리 테이블에 _reward를 반영하고, 반영된 결과를 돌려준다.
+            return (EErrorCode.Success, _reward);
         }
     }
 }

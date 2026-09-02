@@ -4,8 +4,8 @@
 검증하기 위한 도구로, 게임 서버 스타일의 **인앱 상점 구매 파이프라인**을 C#(.NET 8)으로 구현한
 프로젝트입니다.
 
-흐름: **영수증 검증(플랫폼별 전략) → DB 트랜잭션(영수증 등록 + 아이템 지급) → 메모리 반영 →
-응답**, 이 전체를 직접 만든 tick 기반 타이밍 휠이 구동합니다.
+흐름: **영수증 검증(플랫폼별 전략 + 상품 대조) → DB 트랜잭션(영수증 등록 + 아이템 지급) →
+메모리 반영 → 응답**, 이 전체를 직접 만든 tick 기반 타이밍 휠이 구동합니다.
 
 ## 왜 비동기 스택을 처음부터 만들었나
 
@@ -29,7 +29,7 @@
    lock-free로 만들었다가 되돌린 이유 (정합성 vs 성능 트레이드오프 판단)
 3. [`Core/JHGUIDGenerator.cs`의 `Next()`(70번째 줄)](Core/JHGUIDGenerator.cs#L70) —
    Sequence를 왜 wraparound가 아니라 ms 전환 기준으로 리셋해야 하는지
-4. [`DB/DBManager.cs`의 `InsertShopReceipt`(54번째 줄)](DB/DBManager.cs#L54) —
+4. [`DB/DBManager.cs`의 `InsertShopReceipt`(56번째 줄)](DB/DBManager.cs#L56) —
    왜 트랜잭션 전체가 "하나의 비동기 콜백"이어야 하는지
 
 **보너스: 테스트가 실제로 버그를 잡은 사례**
@@ -47,7 +47,11 @@
 ```
 PacketHandler_Shop.C2P_RequestShopBuy
   │
-  ├─ PlatformManager.Verify(platform, receipt)      전략 패턴, 리플렉션으로 자동 등록
+  ├─ DataManager.GetProduct(clientProductId)         없는 상품 / 지급할 게 없는 상품이면
+  │     └─ ProductRecord.GetReward()                  외부 호출 전에 InvalidParam으로 종료
+  │
+  ├─ PlatformManager.Verify(platform, receipt,       전략 패턴, 리플렉션으로 자동 등록
+  │                         clientProductId)          + 영수증이 가리키는 상품과 대조
   │     └─ HTTPManager.Send(...)                     JHTimingWheel로 흉내낸 네트워크 왕복
   │
   ├─ DBManager.InsertShopReceipt(...)                 하나의 원자적 트랜잭션: 중복 체크 →
@@ -73,6 +77,23 @@ PacketHandler_Shop.C2P_RequestShopBuy
 - **예외 대신 `EErrorCode`.** `JHJob<T>`의 reject 채널은 `EErrorCode` 값을 직접 실어 나릅니다.
   잘못된 영수증, 중복 영수증, DB 실패 같은 것들은 예외적인 상황이 아니라 일상적으로 예상되는
   실패라서, `.Catch(errorCode => ...)`처럼 예외 타입을 검사하지 않고 값 하나로 분기합니다.
+
+- **영수증 검증은 "유효한가"와 "무엇에 대한 것인가"를 따로 묻습니다.** 인앱 결제에서 가장 흔한
+  구멍은 영수증 자체는 진짜인데 **클라이언트가 보낸 상품 ID를 그대로 믿는 것**입니다 — 싼 상품을
+  결제한 진짜 영수증으로 비싼 상품을 받아갈 수 있습니다. 그래서 `IPlatform` 구현체는 "이 영수증은
+  어떤 상품의 것인가"(`VerifiedReceipt`)까지만 답하고, 그 상품이 요청한 상품과 맞는지 대조하는
+  책임은 `PlatformManager.Verify`가 가져갑니다. 대조를 호출자(`PacketHandler`)에 맡기지 않은
+  이유는 단순합니다 — 그 검사를 빠뜨려도 흐름은 아무 일 없다는 듯 성공하기 때문에, "기억해서 해야
+  하는 검사"로 두면 언젠가 빠집니다. 검증을 부르려면 기대 상품 ID를 반드시 같이 넘기게 만들어서
+  빠뜨릴 수 없는 자리로 옮겼고, 불일치는 정상 클라이언트라면 나올 수 없는 요청이므로 실패 응답이
+  아니라 `Kick`으로 처리합니다(`BuyTest`의 마지막 케이스).
+
+- **지급할 보상은 외부 호출 이전에 확정합니다.** 핸들러 첫 줄에서
+  `GetProduct(productId)?.GetReward()` 한 줄로 "없는 상품"과 "지급할 게 없는 잘못된 상품 정의"를
+  같이 걸러내고, 통과하지 못하면 플랫폼 검증 왕복조차 시작하지 않습니다. 검증을 통과했다는 건
+  영수증의 상품과 이 상품이 같다는 뜻이므로(다르면 위에서 끊깁니다), `DBManager`는 상품 테이블을
+  다시 조회하지 않고 이미 환산된 `RewardData`만 받아 트랜잭션 안에서 확정합니다 — "무엇을 줄지"는
+  상품 정의가, "그걸 확정하는 일"은 DB 계층이 맡습니다.
 
 - **`JHSerializedObject`는 lock-free지만, 아무렇게나 만든 게 아닙니다.** 초기 버전은
   `Interlocked.CompareExchange` 재시도 루프 안에서 `Task.ContinueWith`를 투기적으로 호출했습니다.
@@ -139,7 +160,7 @@ dotnet run
 
 | 테스트 | 무엇을 증명하는가 |
 |---|---|
-| `BuyTest` | 엔드투엔드 스모크 테스트: 3개 플랫폼에 걸쳐 5건의 구매 요청(잘못된 영수증, 중복 영수증 포함)을 실행해서 성공/검증 실패/이미 등록됨 응답 경로를 확인. 강제 종료(Kick)는 `DBManager`의 실패율(단계별 5%)이 실제로 걸려야 나오는 확률적 경로라 매 실행마다 보장되진 않음(아래 실행 예시에도 이번엔 안 나온 경우가 실려 있음). |
+| `BuyTest` | 엔드투엔드 스모크 테스트: 3개 플랫폼에 걸쳐 6건의 구매 요청(정상 3건 + 중복 영수증 + 위조 영수증 + 상품 변조)을 실행해서 성공/검증 실패/이미 등록됨/상품 불일치 경로를 확인. 마지막 케이스(싼 상품 영수증으로 비싼 상품 요청)는 매 실행마다 반드시 `Kick`으로 끊깁니다. DB 실패로 인한 `Kick`은 실패율(단계별 5%)이 걸려야 나오는 확률적 경로라 별개입니다. |
 | `GuidGeneratorTest` | "서버" 5개 × 스레드 8개 × 대기 없이 최대 속도로 5000개씩 ID 생성, 충돌 0건 기대. |
 | `BulkGrantTest` | 같은 ID 생성기를 두 가지 방식으로 나란히 호출 — tight loop(1024/ms Sequence 예산을 금방 소진)와 `JHTimingWheel` 플레이어별 Job으로 분산하는 방식을 비교해서, "GUID 발급은 느려도 괜찮다"는 설계 판단을 실제 숫자로 보여줌. |
 | `MultiKeyScheduleTest` | 두 단계로 검증: (1) 다중 key 작업 하나가 정확히 한 번만 실행되는지, (2) 무작위 다중 key 작업 300개로 key를 공유하는 작업끼리 절대 겹치지 않는지(예전에 진짜 상호 배제를 보장 못 하던 "한 번만 실행" 가드의 버그를 잡아낸 테스트). |
@@ -150,10 +171,13 @@ dotnet run
 `dotnet run`을 실제로 돌렸을 때 나오는 출력 일부(발췌, 타임스탬프/GUID 일부 생략):
 
 ```
-=== BuyTest: 상점 구매 5회 실행 ===
-[Send -> ...136444417] P2C_ResultShopBuy(ErrorCode=ReceiptVerifyFailed, Item=[null])
-[Send -> ...136411649] P2C_ResultShopBuy(ErrorCode=Success, Item=[Items=[ItemId=1002, Count=1], Currencies=[Gold=3000]])
-[Send -> ...136428033] P2C_ResultShopBuy(ErrorCode=ReceiptAlreadyInserted, Item=[null])
+=== BuyTest: 상점 구매 6회 실행 ===
+[5] Request: player=...806852609, platform=Steam, receipt=3333-1002, productId=1004 (싼 상품 영수증으로 비싼 상품 요청 -> ReceiptProductMismatch + Kick)
+[Send -> ...806836225] P2C_ResultShopBuy(ErrorCode=ReceiptVerifyFailed, Item=[null])
+[Kick -> ...806852609] reason=ReceiptProductMismatch
+[Send -> ...806819841] P2C_ResultShopBuy(ErrorCode=Success, Item=[Items=[ItemId=1000, Count=1], Currencies=[Gold=1000]])
+[Send -> ...689346561] P2C_ResultShopBuy(ErrorCode=ReceiptAlreadyInserted, Item=[null])
+[Kick -> ...806803457] reason=UpdateItemFailed
 === BuyTest 완료 ===
 
 === BulkGrantTest: tight loop로 직접 호출 (나쁜 예) ===
@@ -183,6 +207,9 @@ PASS: 극한 경합 상황에서도 직렬화 유지, 콜백 유실 없음
 
 - `DBManager`와 `HTTPManager`는 전부 더미(랜덤 지연 + 실패율)이며, 실제 DB나 네트워크 호출은
   전혀 없습니다.
+- 영수증 검증도 진짜 서명 검증이 아니라 `"{플랫폼 토큰}-{상품 ID}"` 형식의 문자열 비교입니다.
+  실제 구현이라면 이 자리에 Google Play Developer API / App Store Server API 호출과 서명 검증이
+  들어가지만, "영수증에서 상품 ID를 읽어 요청 상품과 대조한다"는 흐름은 동일합니다.
 - `DBManager`의 영수증 중복 체크용 집합(`ConcurrentDictionary<string, byte>`)은 무한정
   커집니다 — 실제 구현이라면 DB의 유니크 제약으로 대체될 부분입니다.
 - 실제 패킷 직렬화(`IPacket`은 빈 마커 인터페이스)나 실제 소켓 계층은 없습니다.

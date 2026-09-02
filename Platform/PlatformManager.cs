@@ -47,16 +47,26 @@ namespace ShopPurchase.Platform
         }
 
         /// <summary>
-        /// 주어진 플랫폼의 검증 전략을 찾아 영수증을 검증한다. 등록된 구현체가 없으면(설정/배포
-        /// 누락) 예외 대신 EErrorCode.UnsupportedPlatform으로 reject한다.
+        /// 주어진 플랫폼의 검증 전략을 찾아 영수증을 검증하고, 그 영수증이 실제로 _expectedProductId
+        /// 상품에 대한 것인지까지 대조한다. 등록된 구현체가 없으면(설정/배포 누락) 예외 대신
+        /// EErrorCode.UnsupportedPlatform으로 reject한다.
+        ///
+        /// 상품 대조를 호출자(PacketHandler)가 아니라 이 파사드 안에 둔 이유: "영수증이 유효한가"와
+        /// "그게 이 사람이 요청한 상품이 맞는가"는 다른 질문인데, 후자를 빠뜨려도 전자만으로 흐름이
+        /// 멀쩡히 성공해버린다 — 싼 상품 영수증으로 비싼 상품을 받아가는 변조가 조용히 통과한다.
+        /// 그래서 "잊어버릴 수 있는 검사"로 두지 않고, 검증을 부르면 반드시 같이 수행되도록 기대
+        /// 상품 ID를 인자로 받게 만들었다.
         /// </summary>
-        public JHJob<bool> Verify(EPlatform _platform, string _receipt)
+        public JHJob<VerifiedReceipt> Verify(EPlatform _platform, string _receipt, int _expectedProductId)
         {
             var platform = GetPlatform(_platform);
             if (platform == null)
-                return JHJob<bool>.Rejected(EErrorCode.UnsupportedPlatform);
+                return JHJob<VerifiedReceipt>.Rejected(EErrorCode.UnsupportedPlatform);
 
-            return platform.Verify(_receipt);
+            return platform.Verify(_receipt)
+                .Then(_verified => _verified.ProductId == _expectedProductId
+                    ? JHJob<VerifiedReceipt>.Resolved(_verified)
+                    : JHJob<VerifiedReceipt>.Rejected(EErrorCode.ReceiptProductMismatch));
         }
     }
 }
