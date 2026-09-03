@@ -9,17 +9,18 @@ using ShopPurchase.Core.Thread;
 namespace ShopPurchase.Test
 {
     /// <summary>
-    /// "유저 3,000명에게 아이템 10개씩 보상 지급" 같은 대량 생성이 JHGUIDGenerator와
-    /// 어떻게 만나야 안전한지 두 방식을 실측으로 비교한다.
+    /// "유저 3,000명에게 아이템 10개씩 보상 지급" 같은 대량 생성에서, 호출 패턴에 따라
+    /// JHGUIDGenerator의 Sequence 대기가 어떻게 달라지는지 실측한다.
     ///
-    /// - 나쁜 예(RunTightLoop): 한 스레드가 tight loop로 Next()를 30,000번 연달아 호출한다.
-    ///   같은 ms 안에서 Sequence(1024개)를 다 써버리면 다음 ms가 될 때까지 기다리게 된다.
-    /// - 좋은 예(RunViaTimingWheel): PacketHandler_Shop과 같은 패턴으로, 유저별로 JHTimingWheel에
-    ///   Job을 나눠 스케줄한다. 처리가 ThreadPool을 통해 여러 스레드/여러 ms에 걸쳐 자연스럽게
-    ///   퍼지기 때문에 Sequence 소진으로 인한 대기가 거의 생기지 않는다.
+    /// - RunTightLoop: 한 스레드가 tight loop로 Next()를 30,000번 연달아 호출한다. 같은 ms 안에서
+    ///   Sequence(1024개)를 소진하면 다음 ms가 될 때까지 기다리게 된다.
+    /// - RunViaTimingWheel: PacketHandler_Shop과 같은 패턴으로, 유저별로 JHTimingWheel에 Job을
+    ///   나눠 스케줄한다. 처리가 ThreadPool을 통해 여러 스레드와 여러 ms에 걸쳐 퍼진다.
     ///
-    /// 두 방식 모두 중복은 0건이다 — 생성기가 lock 기반이라 충돌은 애초에 나지 않는다. 이 테스트가
-    /// 비교하는 건 정확성이 아니라 "언제, 얼마나 기다리게 되는가"다.
+    /// 어느 쪽이 옳다를 가리는 테스트가 아니다. 중복은 양쪽 다 0건이고(생성기가 lock 기반이라
+    /// 충돌은 애초에 나지 않는다), 스케줄러를 거치는 쪽이 오히려 전체 시간은 더 걸린다.
+    /// 확인하려는 건 "정확성은 어떤 호출 패턴에서도 지켜지고, 그 대가는 충돌이 아니라 대기 시간으로
+    /// 나타난다"는 이 생성기의 성질이다.
     /// </summary>
     public static class BulkGrantTest
     {
@@ -34,7 +35,7 @@ namespace ShopPurchase.Test
 
         private static void RunTightLoop()
         {
-            Console.WriteLine("=== BulkGrantTest: tight loop로 직접 호출 (나쁜 예) ===");
+            Console.WriteLine("=== BulkGrantTest: 한 스레드에서 tight loop로 직접 호출 ===");
 
             var generator = new JHGUIDGenerator(_region: 1, _server: 1);
             var ids = new List<GUID>(PlayerCount * ItemsPerPlayer);
@@ -55,7 +56,7 @@ namespace ShopPurchase.Test
 
         private static void RunViaTimingWheel()
         {
-            Console.WriteLine("=== BulkGrantTest: JHTimingWheel로 유저별 Job 분산 (좋은 예) ===");
+            Console.WriteLine("=== BulkGrantTest: JHTimingWheel로 유저별 Job 분산 ===");
 
             var generator = new JHGUIDGenerator(_region: 1, _server: 1);
             var playerGuidGenerator = new JHGUIDGenerator(_region: 1, _server: 2);
