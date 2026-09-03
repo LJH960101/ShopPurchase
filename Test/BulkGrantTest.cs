@@ -13,10 +13,13 @@ namespace ShopPurchase.Test
     /// 어떻게 만나야 안전한지 두 방식을 실측으로 비교한다.
     ///
     /// - 나쁜 예(RunTightLoop): 한 스레드가 tight loop로 Next()를 30,000번 연달아 호출한다.
-    ///   같은 ms 안에 Sequence(1024개)를 훌쩍 넘겨서 충돌이 크게 난다.
+    ///   같은 ms 안에서 Sequence(1024개)를 다 써버리면 다음 ms가 될 때까지 기다리게 된다.
     /// - 좋은 예(RunViaTimingWheel): PacketHandler_Shop과 같은 패턴으로, 유저별로 JHTimingWheel에
-    ///   Job을 나눠 스케줄한다. 실제 처리가 ThreadPool을 통해 여러 스레드/여러 ms에 걸쳐 자연스럽게
-    ///   퍼지기 때문에 충돌이 거의 발생하지 않는다.
+    ///   Job을 나눠 스케줄한다. 처리가 ThreadPool을 통해 여러 스레드/여러 ms에 걸쳐 자연스럽게
+    ///   퍼지기 때문에 Sequence 소진으로 인한 대기가 거의 생기지 않는다.
+    ///
+    /// 두 방식 모두 중복은 0건이다 — 생성기가 lock 기반이라 충돌은 애초에 나지 않는다. 이 테스트가
+    /// 비교하는 건 정확성이 아니라 "언제, 얼마나 기다리게 되는가"다.
     /// </summary>
     public static class BulkGrantTest
     {

@@ -24,18 +24,18 @@
 
 **`Core/`, `Core/Thread/`가 이 프로젝트의 진짜 핵심(동시성 엔진)이고, 나머지(`Network/`,
 `Platform/`, `DB/`, `Data/`, `Object/`, `PacketHandler/`)는 그 엔진을 실제로 돌려보기 위한
-최소한의 배선입니다.** 시간이 없다면 아래 "핵심만 빠르게 보려면"만 봐도 충분합니다.
+최소한의 배선입니다.**
 
 ## 핵심만 빠르게 보려면
 
 시간이 없다면 이 4곳만 봐도 충분합니다:
 
-1. [`Core/Thread/JHSerializedObject.cs`의 `PostCore`(70번째 줄)](Core/Thread/JHSerializedObject.cs#L70) —
+1. [`Core/Thread/JHSerializedObject.cs`의 `PostCore`(60번째 줄)](Core/Thread/JHSerializedObject.cs#L60) —
    CAS 재시도 루프 + `ContinueWith` 조합이 왜 위험한지, `Interlocked.Exchange`로 어떻게
    해결했는지
-2. [`Core/Thread/JHTimingWheel.cs`의 클래스 상단 주석](Core/Thread/JHTimingWheel.cs#L34) —
+2. [`Core/Thread/JHTimingWheel.cs`의 클래스 상단 주석](Core/Thread/JHTimingWheel.cs#L33) —
    lock-free로 만들었다가 되돌린 이유 (정합성 vs 성능 트레이드오프 판단)
-3. [`Core/JHGUIDGenerator.cs`의 `Next()`(70번째 줄)](Core/JHGUIDGenerator.cs#L70) —
+3. [`Core/JHGUIDGenerator.cs`의 `Next()`(75번째 줄)](Core/JHGUIDGenerator.cs#L75) —
    Sequence를 왜 wraparound가 아니라 ms 전환 기준으로 리셋해야 하는지
 4. [`DB/DBManager.cs`의 `InsertShopReceipt`(56번째 줄)](DB/DBManager.cs#L56) —
    왜 트랜잭션 전체가 "하나의 비동기 콜백"이어야 하는지
@@ -43,12 +43,12 @@
 **보너스: 테스트가 실제로 버그를 잡은 사례**
 
 - [`Test/JHSerializedObjectTest.cs`](Test/JHSerializedObjectTest.cs) — 위 1번의 CAS +
-  `ContinueWith` 버그를 실제로 잡아낸 스트레스 테스트(객체 4개 × 스레드 50개 × 무작위 호출
-  5만 회).
+  `ContinueWith` 버그를 실제로 잡아낸 스트레스 테스트(객체 4개 × 스레드 50개 × 스레드당 250회,
+  총 5만 회).
 - [`Test/MultiKeyScheduleTest.cs`](Test/MultiKeyScheduleTest.cs) — `JHTimingWheel`의 다중 key
   락(lock striping)에서, 진짜 상호 배제를 보장 못 하던 예전의 허술한 "한 번만 실행" 가드를
-  잡아낸 테스트. 이 다중 key API는 실제 구매 흐름에서는 안 쓰이고 `BulkGrantTest`에서만
-  예시로 쓰이는 저수준 프리미티브다.
+  잡아낸 테스트. 이 다중 key API는 실제 구매 흐름에서는 쓰이지 않고 테스트에서만 돌려보는
+  저수준 프리미티브입니다.
 
 ## 아키텍처
 
@@ -109,7 +109,7 @@ PacketHandler_Shop.C2P_RequestShopBuy
   시도가 걸어둔 continuation이 그대로 살아남아 "진짜" 체인과 무관하게 따로 실행되는 문제(부하
   상황에서 실제로 겹쳐 실행됨)가 있었습니다. `Interlocked.Exchange`(항상 성공하는 무조건적
   스왑이라 재시도 자체가 없음)로 고쳤고, `JHSerializedObjectTest`(객체 4개 × 스레드 50개 ×
-  무작위 호출 250회)로 겹침이 0건임을 검증했습니다.
+  스레드당 250회, 총 5만 회)로 겹침이 0건임을 검증했습니다.
 
 - **`JHTimingWheel`의 슬롯 저장소는 의도적으로 lock-free가 아니라 `List<T>` + lock입니다.**
   `ConcurrentQueue` 기반 lock-free 버전을 시도했다가 되돌렸습니다 — "지금 슬롯이 몇 번인지 읽는
@@ -186,9 +186,9 @@ dotnet run
 |---|---|
 | `BuyTest` | 엔드투엔드 스모크 테스트: 3개 플랫폼에 걸쳐 6건의 구매 요청(정상 3건 + 중복 영수증 + 위조 영수증 + 상품 변조)을 실행해서 성공/검증 실패/이미 등록됨/상품 불일치 경로를 확인. 마지막 케이스(싼 상품 영수증으로 비싼 상품 요청)는 매 실행마다 반드시 `Kick`으로 끊깁니다. DB 실패로 인한 `Kick`은 실패율(단계별 5%)이 걸려야 나오는 확률적 경로라 별개입니다. |
 | `GuidGeneratorTest` | "서버" 5개 × 스레드 8개 × 대기 없이 최대 속도로 5000개씩 ID 생성, 충돌 0건 기대. |
-| `BulkGrantTest` | 같은 ID 생성기를 두 가지 방식으로 나란히 호출 — tight loop(1024/ms Sequence 예산을 금방 소진)와 `JHTimingWheel` 플레이어별 Job으로 분산하는 방식을 비교해서, "GUID 발급은 느려도 괜찮다"는 설계 판단을 실제 숫자로 보여줌. |
+| `BulkGrantTest` | 같은 ID 생성기를 두 가지 방식으로 나란히 호출 — tight loop(같은 ms 안에서 Sequence 1024개를 소진하고 다음 ms까지 대기)와 `JHTimingWheel` 플레이어별 Job으로 분산하는 방식. 양쪽 다 중복은 0건이고(생성기가 lock 기반이라 충돌은 애초에 안 남), 비교 대상은 정확성이 아니라 "언제 얼마나 기다리게 되는가"입니다. |
 | `MultiKeyScheduleTest` | 두 단계로 검증: (1) 다중 key 작업 하나가 정확히 한 번만 실행되는지, (2) 무작위 다중 key 작업 300개로 key를 공유하는 작업끼리 절대 겹치지 않는지(예전에 진짜 상호 배제를 보장 못 하던 "한 번만 실행" 가드의 버그를 잡아낸 테스트). |
-| `JHSerializedObjectTest` | 객체 4개 × 스레드 50개 × 무작위 `Post`/`Reserve` 호출 250회(총 5만 회): 겹치는 실행 0건, 유실된 콜백 0건(위에서 설명한 CAS + `ContinueWith` 버그를 잡아낸 테스트). |
+| `JHSerializedObjectTest` | 객체 4개 × 스레드 50개 × 스레드당 `Post`/`Reserve` 무작위 250회(총 5만 회): 겹치는 실행 0건, 유실된 콜백 0건(위에서 설명한 CAS + `ContinueWith` 버그를 잡아낸 테스트). |
 
 ### 실행 예시
 
