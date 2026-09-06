@@ -7,11 +7,12 @@ using ShopPurchase.Core.Thread;
 namespace ShopPurchase.Test
 {
     /// <summary>
-    /// Post/Reserve의 lock-free(Interlocked.Exchange 기반) 직렬화가 극한 경합 상황에서도
-    /// 실제로 안전한지 확인한다.
+    /// Post/Reserve의 락 없는(Interlocked.CompareExchange로 드레인 권한을 따내는) 직렬화가
+    /// 극한 경합 상황에서도 실제로 안전한지 확인한다.
     ///
     /// - 겹치는 실행이 한 건도 없는지 (같은 객체를 동시에 두 곳에서 건드리지 않는지)
-    /// - 콜백이 유실되지 않고 요청한 만큼 전부 완료되는지 (락 없이 체인만으로 끝까지 이어지는지)
+    /// - 작업이 유실되지 않고 요청한 만큼 전부 완료되는지 (드레인 권한을 놓는 순간과 큐에 막
+    ///   들어온 작업이 엇갈려서 아무도 안 집어가는 일이 없는지)
     /// - 제한 시간 안에 전부 끝나는지 (데드락/라이브락 없는지)
     ///
     /// 적은 수의 객체(ObjectCount)에 많은 스레드(ProducerThreadCount)를 동시에 몰아붙여서
@@ -34,7 +35,7 @@ namespace ShopPurchase.Test
 
         public static void Run()
         {
-            Console.WriteLine("=== JHSerializedObjectTest: Post/Reserve lock-free 직렬화 극한 검증 ===");
+            Console.WriteLine("=== JHSerializedObjectTest: Post/Reserve 직렬화 극한 검증 ===");
 
             var targets = new DummySerialized[ObjectCount];
             var busy = new int[ObjectCount];
@@ -91,12 +92,12 @@ namespace ShopPurchase.Test
 
             Console.WriteLine($"총 요청: {totalCalls}, 총 완료: {totalCompleted}, 경과: {stopwatch.ElapsedMilliseconds}ms");
             Console.WriteLine(!completedInTime
-                ? "FAIL: 제한 시간 안에 모든 작업이 끝나지 않음 (콜백 유실/데드락 의심)"
+                ? "FAIL: 제한 시간 안에 모든 작업이 끝나지 않음 (작업 유실/데드락 의심)"
                 : violationDetected
                     ? "FAIL: 같은 객체에 대해 겹치는 실행이 발생함"
                     : totalCompleted != totalCalls
                         ? $"FAIL: 완료 개수 불일치 (기대 {totalCalls}, 실제 {totalCompleted})"
-                        : "PASS: 극한 경합 상황에서도 직렬화 유지, 콜백 유실 없음");
+                        : "PASS: 극한 경합 상황에서도 직렬화 유지, 작업 유실 없음");
 
             Console.WriteLine("=== JHSerializedObjectTest 완료 ===");
         }

@@ -30,8 +30,8 @@ namespace ShopPurchase.Test
 
                 for (int t = 0; t < ThreadsPerServer; t++)
                 {
-                    // 이 프로젝트는 Task를 쓰지 않으므로 스레드를 직접 만든다. 어차피 "대기 없이 최대
-                    // 속도로 몰아치는" 게 목적이라 풀에 맡기는 것보다 전용 스레드가 의도에 더 맞는다.
+                    // 풀에 맡기지 않고 스레드를 직접 만든다. "대기 없이 최대 속도로 몰아치는" 게
+                    // 목적이라, 큐잉 지연이 끼는 ThreadPool보다 전용 스레드가 의도에 더 맞는다.
                     var thread = new System.Threading.Thread(() =>
                     {
                         for (int i = 0; i < IdsPerThread; i++)

@@ -12,9 +12,14 @@ namespace ShopPurchase.Core.Thread
     }
 
     /// <summary>
-    /// C#의 Task/async-await 대신 사용하는 자체 Promise 타입.
-    /// 실제 실행/지연은 JHTimingWheel이 담당하고, JHJob은 결과 전달과 체이닝(Then/Catch)만 담당한다.
-    /// 실패는 Exception이 아니라 EErrorCode로 전달된다 — Catch(_errorCode => ...)처럼 바로 EErrorCode를 받는다.
+    /// C#의 Task/async-await 대신 이 프로젝트가 쓰는 Promise 타입. 실제 실행/지연은 JHTimingWheel이,
+    /// 객체 단위 직렬화는 JHSerializedObject가 담당하고, JHJob은 그 사이를 오가는 결과 전달과
+    /// 체이닝(Then/Catch)만 맡는다.
+    ///
+    /// 실패는 Exception이 아니라 EErrorCode로 전달된다 — Catch(_errorCode => ...)처럼 바로 값으로 받는다.
+    /// 잘못된 영수증이나 DB 실패처럼 일상적으로 예상되는 결과를 예외로 던지지 않기 위한 선택이다.
+    /// 어느 단계에서 reject되든 남은 Then은 건너뛰어지고 Catch로 바로 간다. Catch는 에러를 소비하지
+    /// 않고 그대로 흘려보내므로, 중간에서 정리만 하고 실패는 최종 호출자까지 전파할 수 있다.
     /// </summary>
     public class JHJob<T>
     {

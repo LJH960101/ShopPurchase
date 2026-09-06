@@ -219,7 +219,7 @@ dotnet run
 | `GuidGeneratorTest` | "서버" 5개 × 스레드 8개 × 대기 없이 최대 속도로 5000개씩 ID 생성, 충돌 0건 기대. |
 | `BulkGrantTest` | 호출 패턴에 따라 Sequence 대기가 어떻게 달라지는지 실측 — 한 스레드 tight loop와 `JHTimingWheel` 유저별 Job 분산을 같은 생성기로 나란히 돌립니다. 중복은 양쪽 다 0건이며, 확인하려는 건 "정확성은 어떤 패턴에서도 지켜지고 대가는 충돌이 아니라 대기 시간으로 나타난다"는 성질입니다. |
 | `MultiKeyScheduleTest` | 두 단계로 검증: (1) 다중 key 작업 하나가 정확히 한 번만 실행되는지, (2) 무작위 다중 key 작업 300개로 key를 공유하는 작업끼리 절대 겹치지 않는지(예전에 진짜 상호 배제를 보장 못 하던 "한 번만 실행" 가드의 버그를 잡아낸 테스트). |
-| `JHSerializedObjectTest` | 객체 4개 × 스레드 50개 × 스레드당 `Post`/`Reserve` 무작위 250회(총 5만 회): 겹치는 실행 0건, 유실된 콜백 0건(위에서 설명한 CAS + `ContinueWith` 버그를 잡아낸 테스트). |
+| `JHSerializedObjectTest` | 객체 4개 × 스레드 50개 × 스레드당 `Post`/`Reserve` 무작위 250회(총 5만 회): 겹치는 실행 0건, 유실된 작업 0건(위에서 설명한 CAS + `ContinueWith` 버그를 잡아낸 테스트). |
 
 ### 실행 예시
 
@@ -259,9 +259,9 @@ PASS: 다중 key 작업이 정확히 한 번 실행됨
 === MultiKeyScheduleTest: 겹치는 key 동시 실행 방지 검증 ===
 PASS: 300개 작업 모두 겹치는 key끼리 동시 실행되지 않음
 
-=== JHSerializedObjectTest: Post/Reserve lock-free 직렬화 극한 검증 ===
+=== JHSerializedObjectTest: Post/Reserve 직렬화 극한 검증 ===
 총 요청: 50000, 총 완료: 50000, 경과: 61ms
-PASS: 극한 경합 상황에서도 직렬화 유지, 콜백 유실 없음
+PASS: 극한 경합 상황에서도 직렬화 유지, 작업 유실 없음
 ```
 
 `BulkGrantTest`의 두 숫자(407ms vs 543ms)는 어느 쪽이 낫다는 뜻이 아닙니다. 스케줄러를 거치는
