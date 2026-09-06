@@ -58,6 +58,9 @@ PacketHandler_Shop.C2P_RequestShopBuy
   ├─ DataManager.GetProduct(clientProductId)         없는 상품 / 지급할 게 없는 상품이면
   │     └─ ProductRecord.GetReward()                  외부 호출 전에 InvalidParam으로 종료
   │
+  ├─ Player.TryConsumeReceipt(receipt)               같은 영수증 재사용이면 여기서 끊는다
+  │                                                    (검증 왕복을 시작조차 하지 않음)
+  │
   ├─ PlatformManager.Verify(platform, receipt,       전략 패턴, 리플렉션으로 자동 등록
   │                         clientProductId)          + 영수증이 가리키는 상품과 대조
   │     └─ HTTPManager.Send(...)                     JHTimingWheel로 흉내낸 네트워크 왕복
@@ -69,6 +72,9 @@ PacketHandler_Shop.C2P_RequestShopBuy
   └─ Player.ApplyDBItemContext(...)                   DB가 확정한 보상을 메모리에 반영,
                                                         항상 최신 상태 기준으로 적용되도록
                                                         다시 Post로 감쌈
+
+  (어느 단계에서 실패하든) Catch 하나로 모임 → Player.ReleaseReceipt로 선점을 되돌리고,
+  클라이언트 잘못이면 실패 응답, 그 밖이면 Kick
 ```
 
 핵심 엔진 (`Core/`, `Core/Thread/`):
@@ -133,10 +139,13 @@ PacketHandler_Shop.C2P_RequestShopBuy
   무언가가 이 플레이어의 메모리를 건드렸을 수 있어서, 보상은 항상 그 실행 시점의 "현재" 상태를
   기준으로 더해져야 합니다.
 
-- **`DBManager`는 각 `Player`가 소유하는 게 아니라 전역 싱글턴입니다.** 실제 DB는 플레이어
-  개인이 아니라 서버 전체가 공유하는 자원이고, 애초에 플레이어별 직렬화가 필요한 지점도 없습니다
-  — 영수증 중복 체크는 그 자체로 이미 원자적이고(`ConcurrentDictionary`), 트랜잭션 하나하나도
-  이미 원자적 작업 단위이기 때문입니다.
+- **`DBManager`는 전역 싱글턴이지만, 영수증 중복 판정은 `Player`가 들고 있습니다.** 실제 DB는
+  플레이어 개인이 아니라 서버 전체가 공유하는 자원이라 `DBManager`는 싱글턴입니다. 반면 "이
+  영수증을 이 플레이어가 이미 썼는가"는 저장 로직이 아니라 그 플레이어에 대한 판단이라
+  `Player.TryConsumeReceipt`가 갖습니다(`ConcurrentDictionary`로 판정과 등록을 한 번의 원자적
+  연산으로 끝냅니다). 선점은 핸들러가 플랫폼 검증 왕복보다 **먼저** 하고, 체인이 실패하면 그
+  체인의 유일한 `Catch`가 `ReleaseReceipt`로 되돌립니다 — 선점과 해제가 코드에 정확히 한 곳씩만
+  존재하도록 배치한 것입니다.
 
 ## 프로젝트 구조
 
@@ -184,7 +193,7 @@ dotnet run
 
 | 테스트 | 무엇을 증명하는가 |
 |---|---|
-| `BuyTest` | 엔드투엔드 스모크 테스트: 3개 플랫폼에 걸쳐 6건의 구매 요청(정상 3건 + 중복 영수증 + 위조 영수증 + 상품 변조)을 실행해서 성공/검증 실패/이미 등록됨/상품 불일치 경로를 확인. 마지막 케이스(싼 상품 영수증으로 비싼 상품 요청)는 매 실행마다 반드시 `Kick`으로 끊깁니다. DB 실패로 인한 `Kick`은 실패율(단계별 5%)이 걸려야 나오는 확률적 경로라 별개입니다. |
+| `BuyTest` | 엔드투엔드 스모크 테스트: 플레이어 한 명이 5건(정상 2건 + 같은 영수증 재사용 + 위조 영수증 + 상품 변조)을 보내 성공/이미 등록됨/검증 실패/상품 불일치 경로를 확인. 영수증 중복 판정이 `Player` 단위라 한 명이 보내야 재사용이 잡히고, 플레이어의 플랫폼은 생성자에서 고정되므로 실제로 타는 검증 경로는 `GooglePlay` 하나입니다(Apple/Steam 구현체는 리플렉션으로 등록만 됩니다). 상품 변조 건은 매 실행마다 반드시 `Kick`으로 끊깁니다. DB 실패로 인한 `Kick`은 실패율(단계별 5%)이 걸려야 나오는 확률적 경로라 별개입니다. |
 | `GuidGeneratorTest` | "서버" 5개 × 스레드 8개 × 대기 없이 최대 속도로 5000개씩 ID 생성, 충돌 0건 기대. |
 | `BulkGrantTest` | 호출 패턴에 따라 Sequence 대기가 어떻게 달라지는지 실측 — 한 스레드 tight loop와 `JHTimingWheel` 유저별 Job 분산을 같은 생성기로 나란히 돌립니다. 중복은 양쪽 다 0건이며, 확인하려는 건 "정확성은 어떤 패턴에서도 지켜지고 대가는 충돌이 아니라 대기 시간으로 나타난다"는 성질입니다. |
 | `MultiKeyScheduleTest` | 두 단계로 검증: (1) 다중 key 작업 하나가 정확히 한 번만 실행되는지, (2) 무작위 다중 key 작업 300개로 key를 공유하는 작업끼리 절대 겹치지 않는지(예전에 진짜 상호 배제를 보장 못 하던 "한 번만 실행" 가드의 버그를 잡아낸 테스트). |
@@ -195,13 +204,18 @@ dotnet run
 `dotnet run`을 실제로 돌렸을 때 나오는 출력 일부(발췌, 타임스탬프/GUID 일부 생략):
 
 ```
-=== BuyTest: 상점 구매 6회 실행 ===
-[5] Request: player=...806852609, platform=Steam, receipt=3333-1002, productId=1004 (싼 상품 영수증으로 비싼 상품 요청 -> ReceiptProductMismatch + Kick)
-[Send -> ...806836225] P2C_ResultShopBuy(ErrorCode=ReceiptVerifyFailed, Item=[null])
-[Kick -> ...806852609] reason=ReceiptProductMismatch
-[Send -> ...806819841] P2C_ResultShopBuy(ErrorCode=Success, Item=[Items=[ItemId=1000, Count=1], Currencies=[Gold=1000]])
-[Send -> ...689346561] P2C_ResultShopBuy(ErrorCode=ReceiptAlreadyInserted, Item=[null])
-[Kick -> ...806803457] reason=UpdateItemFailed
+=== BuyTest: 상점 구매 5회 실행 ===
+플레이어: ...145555969 (platform=GooglePlay)
+[0] Request: receipt=1111-1000, productId=1000 (정상 구매)
+[1] Request: receipt=1111-1001, productId=1001 (정상 구매)
+[2] Request: receipt=1111-1000, productId=1000 (같은 영수증 재사용 -> ReceiptAlreadyInserted)
+[Send] P2C_ResultShopBuy(ErrorCode=ReceiptAlreadyInserted, Item=[null])     ← 검증 왕복 없이 즉시
+[3] Request: receipt=0000-1004, productId=1004 (위조 영수증 -> ReceiptVerifyFailed)
+[4] Request: receipt=1111-1002, productId=1004 (싼 상품 영수증으로 비싼 상품 요청 -> ReceiptProductMismatch + Kick)
+[Send] P2C_ResultShopBuy(ErrorCode=Success, Item=[Items=[ItemId=1000, Count=1], Currencies=[Gold=1000]])
+[Send] P2C_ResultShopBuy(ErrorCode=ReceiptVerifyFailed, Item=[null])
+[Kick] reason=ReceiptProductMismatch
+[Kick] reason=DBConnectionFailed                                            ← 5% 확률 경로
 === BuyTest 완료 ===
 
 === GuidGeneratorTest: JHGUIDGenerator (서버 x 스레드 최대 속도) ===
@@ -243,6 +257,8 @@ PASS: 극한 경합 상황에서도 직렬화 유지, 콜백 유실 없음
 - 영수증 검증도 진짜 서명 검증이 아니라 `"{플랫폼 토큰}-{상품 ID}"` 형식의 문자열 비교입니다.
   실제 구현이라면 이 자리에 Google Play Developer API / App Store Server API 호출과 서명 검증이
   들어가지만, "영수증에서 상품 ID를 읽어 요청 상품과 대조한다"는 흐름은 동일합니다.
-- `DBManager`의 영수증 중복 체크용 집합(`ConcurrentDictionary<string, byte>`)은 무한정
-  커집니다 — 실제 구현이라면 DB의 유니크 제약으로 대체될 부분입니다.
+- 영수증 중복 판정이 `Player` 단위라, **같은 영수증 문자열을 다른 계정이 다시 쓰는 것은 막지
+  못합니다.** 실제 서비스라면 검증 응답에 담긴 구매 계정을 요청자와 대조하거나, 소비된 영수증을
+  DB의 유니크 제약으로 전역 관리해야 합니다.
+- `Player`가 들고 있는 소비 영수증 집합은 무한정 커집니다 — 실제 구현이라면 DB가 맡을 부분입니다.
 - 실제 패킷 직렬화(`IPacket`은 빈 마커 인터페이스)나 실제 소켓 계층은 없습니다.

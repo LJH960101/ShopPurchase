@@ -19,6 +19,15 @@ namespace ShopPurchase.PacketHandler
                 return;
             }
 
+            // 검증 왕복을 시작하기 전에 선점한다 — 왕복이 도는 동안 같은 영수증으로 두 번째 요청이
+            // 들어와도 여기서 막히고, 외부 호출도 시작하지 않는다.
+            if (!_player.TryConsumeReceipt(_packet.Receipt))
+            {
+                var response = new P2C_ResultShopBuy(EErrorCode.ReceiptAlreadyInserted, null);
+                _player.Send(response);
+                return;
+            }
+
             PlatformManager.Instance.Verify(_player.GetPlatformType(), _packet.Receipt, _packet.ProductId)
                 .Then(_ => DBManager.Instance.InsertShopReceipt(_player.GetGUID(), _packet.Receipt, reward))
                 .Then(_result =>
@@ -33,6 +42,9 @@ namespace ShopPurchase.PacketHandler
                 })
                 .Catch(_errorCode =>
                 {
+                    // 선점은 여기 한 곳에서만 되돌린다 — 어느 단계에서 실패하든 Catch 하나로 모인다.
+                    _player.ReleaseReceipt(_packet.Receipt);
+
                     if (_errorCode.IsOneOf(EErrorCode.ReceiptAlreadyInserted, EErrorCode.ReceiptVerifyFailed))
                     {
                         var response = new P2C_ResultShopBuy(_errorCode, null);

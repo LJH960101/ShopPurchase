@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using ShopPurchase.Common;
 using ShopPurchase.Core;
 using ShopPurchase.Core.Thread;
@@ -14,12 +13,10 @@ namespace ShopPurchase.DB
     /// BeginTran ~ EndTran은 하나의 delay(=하나의 지연/실패 확률을 가진 원자적 단위) 안에서 전부
     /// 동기로 순서대로 실행한다. 트랜잭션 도중에 다른 작업이 끼어들 수 없어야 하는데, 각 단계를
     /// 별개의 비동기 단계로 쪼개면 그 사이 틈에 다른 작업이 끼어들 수 있기 때문이다.
-    /// 이 안에서 공유 상태를 건드리는 곳(영수증 중복 체크)은 그래서 별도 락 없이도 안전하도록
-    /// ConcurrentDictionary 같은 원자적 자료구조로만 처리한다.
+    /// 영수증 중복 판정은 여기가 아니라 Player가 들고 있다(Player.TryConsumeReceipt).
     ///
     /// 실패해도 throw하지 않는다 — 실패 분기마다 job.Reject(EErrorCode)를 바로 부르고 return한다.
-    /// 정말 예상 못한 예외가 나면 감싸고 있는 catch가 잡아서 로그를 남기고, 영수증 중복 체크
-    /// 항목도 반드시 정리한 뒤 EErrorCode.Exception으로 reject한다.
+    /// 정말 예상 못한 예외가 나면 감싸고 있는 catch가 잡아서 로그를 남기고 Exception으로 reject한다.
     /// </summary>
     public class DBManager
     {
@@ -33,9 +30,6 @@ namespace ShopPurchase.DB
         // System.Guid 대신 우리가 만든 JHGUIDGenerator로 통일해서 쓴다.
         private static readonly JHGUIDGenerator s_idGenerator = new JHGUIDGenerator(_region: 1, _server: 1);
 
-        // 영수증 중복 사용 방지. 여러 스레드가 동시에 건드릴 수 있어 lock-free 자료구조를 쓴다.
-        private static readonly ConcurrentDictionary<string, byte> s_consumedReceipts = new ConcurrentDictionary<string, byte>();
-
         private DBManager()
         {
         }
@@ -48,10 +42,6 @@ namespace ShopPurchase.DB
         /// 지급할 보상(_reward)은 이미 환산된 상태로 받는다 — 여기서 상품 테이블을 다시 조회해
         /// 환산하지 않는다. 무엇을 줄지는 상품 정의(ProductRecord.GetReward)가 정하고, 이 계층은
         /// 그걸 트랜잭션 안에서 확정하는 일만 한다.
-        ///
-        /// 중복 체크(TryAdd)는 BeginTran보다 먼저, 트랜잭션 시작 전에 한다 — 같은 영수증으로 동시에
-        /// 두 요청이 들어와도 하나만 통과시키기 위한 것으로, 이걸 트랜잭션 완료 후로 미루면 두 요청이
-        /// 둘 다 통과해서 아이템이 두 번 지급되는 레이스가 생긴다.
         /// </summary>
         public JHJob<InsertShopReceiptResult> InsertShopReceipt(GUID _playerGuid, string _receipt, RewardData _reward)
         {
@@ -62,26 +52,18 @@ namespace ShopPurchase.DB
             {
                 try
                 {
-                    if (!s_consumedReceipts.TryAdd(_receipt, 0))
-                    {
-                        job.Reject(EErrorCode.ReceiptAlreadyInserted);
-                        return;
-                    }
-
                     if (Random.Shared.NextDouble() < ConnectionFailureRate)
                     {
-                        s_consumedReceipts.TryRemove(_receipt, out _);
                         job.Reject(EErrorCode.DBConnectionFailed);
                         return;
                     }
 
                     var tran = BeginTran();
 
-                    var (receiptErrorCode, receiptResult) = SP_InsertShopReceipt(tran, _receipt);
+                    var (receiptErrorCode, receiptResult) = SP_InsertShopReceipt(tran, _playerGuid, _receipt);
                     if (receiptErrorCode != EErrorCode.Success)
                     {
                         RollbackTran(tran);
-                        s_consumedReceipts.TryRemove(_receipt, out _);
                         job.Reject(receiptErrorCode);
                         return;
                     }
@@ -90,7 +72,6 @@ namespace ShopPurchase.DB
                     if (itemErrorCode != EErrorCode.Success)
                     {
                         RollbackTran(tran);
-                        s_consumedReceipts.TryRemove(_receipt, out _);
                         job.Reject(itemErrorCode);
                         return;
                     }
@@ -100,14 +81,7 @@ namespace ShopPurchase.DB
                 }
                 catch (Exception ex)
                 {
-                    // 이 예외가 EndTran(커밋) 이전인지 이후인지는 구분하지 않는다 — 커밋 이후라면
-                    // 이미 DB엔 반영됐는데 영수증만 다시 풀어주는 셈이라 재사용 위험이 있지만, 지금은
-                    // 어차피 EErrorCode.Exception이 화이트리스트 밖이라 PacketHandler_Shop.Catch가
-                    // 무조건 Kick으로 보낸다 — 애매하게 반반씩 처리하지 말고 "확실치 않으면 통째로
-                    // 의심하고 끊는다"로 단순하게 간다. 실제 DB로 교체되면 이 지점에서 커밋 여부를
-                    // 정말로 구분해야 할 수 있다.
                     Console.WriteLine($"[DBManager] InsertShopReceipt에서 처리 안 된 예외: {ex}");
-                    s_consumedReceipts.TryRemove(_receipt, out _);
                     job.Reject(EErrorCode.Exception);
                 }
             });
@@ -127,12 +101,12 @@ namespace ShopPurchase.DB
             // 롤백. 실제 DB로 교체되면 여기서 진짜 ROLLBACK을 호출하게 된다.
         }
 
-        private (EErrorCode ErrorCode, ShopReceiptData Value) SP_InsertShopReceipt(DBTransaction _tran, string _receipt)
+        private (EErrorCode ErrorCode, ShopReceiptData Value) SP_InsertShopReceipt(DBTransaction _tran, GUID _playerGuid, string _receipt)
         {
             if (Random.Shared.NextDouble() < InsertFailureRate)
                 return (EErrorCode.InsertReceiptFailed, null);
 
-            return (EErrorCode.Success, new ShopReceiptData(s_idGenerator.Next(), _receipt));
+            return (EErrorCode.Success, new ShopReceiptData(s_idGenerator.Next(), _playerGuid, _receipt));
         }
 
         private (EErrorCode ErrorCode, RewardData Value) SP_InsertItem(DBTransaction _tran, RewardData _reward)

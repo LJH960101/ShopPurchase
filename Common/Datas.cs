@@ -41,11 +41,13 @@ namespace ShopPurchase.Common
     public class ShopReceiptData
     {
         public GUID ReceiptRowId { get; }
+        public GUID PlayerGuid { get; }
         public string Receipt { get; }
 
-        public ShopReceiptData(GUID _receiptRowId, string _receipt)
+        public ShopReceiptData(GUID _receiptRowId, GUID _playerGuid, string _receipt)
         {
             ReceiptRowId = _receiptRowId;
+            PlayerGuid = _playerGuid;
             Receipt = _receipt;
         }
     }
