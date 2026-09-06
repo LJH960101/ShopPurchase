@@ -21,6 +21,12 @@
 `JHTimingWheel`이 담당합니다. 다만 실제 실행은 `ThreadPool`에 던집니다 — 스케줄링과 직렬화
 규칙은 직접 만들되 그 밑의 스레드 풀까지 새로 만드는 건 이 프로젝트의 범위가 아니라고 봤습니다.
 
+`Task`와 `async`/`await`는 **외부 드라이버를 감싸는 경계 한 곳([`HTTP/HTTPManager.cs`](HTTP/HTTPManager.cs))
+에만** 있습니다. 실제 `HttpClient`나 DB 드라이버는 `Task`만 돌려주므로 그 경계에서는 피할 수 없고,
+피하는 게 목적도 아닙니다 — 중요한 건 **어디까지 들어오게 둘 것인가**입니다. 그래서 `await`도
+예외도 그 어댑터 안에서 끝나고, 위쪽 코드는 `JHJob`과 `EErrorCode`만 봅니다. 예외를 에러 코드로
+바꾸는 지점도 코드 전체에서 그 한 곳뿐입니다.
+
 **`Core/`, `Core/Thread/`가 이 프로젝트의 진짜 핵심(동시성 엔진)이고, 나머지(`Network/`,
 `Platform/`, `DB/`, `Data/`, `Object/`, `PacketHandler/`)는 그 엔진을 실제로 돌려보기 위한
 최소한의 배선입니다.**
@@ -62,7 +68,7 @@ PacketHandler_Shop.C2P_RequestShopBuy
   │
   ├─ PlatformManager.Verify(platform, receipt,       전략 패턴, 리플렉션으로 자동 등록
   │                         clientProductId)          + 영수증이 가리키는 상품과 대조
-  │     └─ HTTPManager.Send(...)                     JHTimingWheel로 흉내낸 네트워크 왕복
+  │     └─ HTTPManager.Send(...)                     흉내낸 네트워크 왕복 (Task → JHJob 어댑터)
   │
   ├─ DBManager.InsertShopReceipt(...)                 비동기 홉 네 번을 Then으로 연결:
   │                                                    BeginTran → 영수증 등록 → 아이템 지급
@@ -90,6 +96,15 @@ PacketHandler_Shop.C2P_RequestShopBuy
 - **예외 대신 `EErrorCode`.** `JHJob<T>`의 reject 채널은 `EErrorCode` 값을 직접 실어 나릅니다.
   잘못된 영수증, 중복 영수증, DB 실패 같은 것들은 예외적인 상황이 아니라 일상적으로 예상되는
   실패라서, `.Catch(errorCode => ...)`처럼 예외 타입을 검사하지 않고 값 하나로 분기합니다.
+
+- **`Task`는 없애는 게 아니라 경계에 가둡니다.** 실제 `HttpClient`나 DB 드라이버는 `Task`만
+  돌려주므로, 외부 드라이버를 감싸는 계층에서 `async`/`await`를 피하는 건 가능하지도 바람직하지도
+  않습니다. 대신 [`HTTPManager.SendAsync`](HTTP/HTTPManager.cs)가 `await`로 결과를 받아 `JHJob`으로
+  옮겨 담는 어댑터 역할을 하고, 그 위쪽 코드는 `Task`를 전혀 보지 않습니다. 예외를 `EErrorCode`로
+  바꾸는 지점도 코드 전체에서 여기 하나뿐이라, 실패 변환 규칙이 여기저기 흩어지지 않습니다.
+  여기서 `Resolve`를 `try` 블록 **밖**에 두는 것이 중요합니다 — `Resolve`는 등록된 `Then` 콜백을
+  그 자리에서 전부 실행하므로, `try` 안에 두면 다운스트림 핸들러의 예외까지 이 `catch`가 잡고,
+  그때는 이미 `Fulfilled` 상태라 뒤이은 `Reject`가 무시되어 실패가 조용히 사라집니다.
 
 - **영수증 검증은 "유효한가"와 "무엇에 대한 것인가"를 따로 묻습니다.** 인앱 결제에서 가장 흔한
   구멍은 영수증 자체는 진짜인데 **클라이언트가 보낸 상품 ID를 그대로 믿는 것**입니다 — 싼 상품을
@@ -162,7 +177,7 @@ Core/Thread/           JHJob, JHTimingWheel, JHSerializedObject
 Common/                EErrorCode/EPlatform/ECurrencyType, 공용 데이터 타입, GUID 타입 별칭
 Network/               패킷 정의 (C2P_RequestShopBuy / P2C_ResultShopBuy)
 Platform/              IPlatform 전략 + Google/Apple/Steam + 리플렉션 기반 자동 등록
-HTTP/                  흉내낸 HTTP 왕복
+HTTP/                  흉내낸 HTTP 왕복 — Task/async-await가 존재하는 유일한 경계
 Data/                  상품 테이블 (더미)
 DB/                    DBManager (더미, 트랜잭션 기반)
 Object/                Player
