@@ -1,22 +1,28 @@
 using System;
+using System.Collections.Concurrent;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace ShopPurchase.Core.Thread
 {
     /// <summary>
     /// 직렬화가 필요한 객체(Player 등)가 상속받는 기반 클래스.
     /// 생성자로 받는 key는 로그/식별용 라벨이다 — 실제 직렬화는 key가 아니라 이 객체가 직접 들고 있는
-    /// m_currentTask로 이루어지므로, 서로 다른 인스턴스끼리 key가 겹쳐도 문제가 없다.
+    /// 큐와 드레인 권한으로 이루어지므로, 서로 다른 인스턴스끼리 key가 겹쳐도 문제가 없다.
     ///
-    /// 락(Monitor)이 아니라 이 객체가 직접 들고 있는 Task 참조 하나로 직렬화한다 (lock-free):
-    /// - m_currentTask가 null이거나 이미 끝난 Task면 "쉬고 있다"는 뜻 -> 호출한 스레드에서 바로 실행한다.
-    /// - 아직 안 끝난 Task를 가리키고 있으면 "실행 중"이라는 뜻 -> ContinueWith로 그 뒤에 이어붙인다.
-    /// - Interlocked.CompareExchange 재시도 루프는 쓰지 않는다 — ContinueWith는 호출하는 순간 이미
-    ///   등록이 확정되는 부작용이 있어서, "실패하면 재시도"하는 CAS 루프 안에서 부르면 실패한(버려진)
-    ///   시도가 걸어둔 ContinueWith가 사라지지 않고 그대로 살아남아 체인과 무관하게 따로 실행돼버린다.
-    ///   대신 Interlocked.Exchange(항상 성공하는 무조건적 스왑, 재시도 자체가 없음)로 m_currentTask를
-    ///   갈아끼우고 그 반환값(직전 값)을 기준으로 딱 한 번만 판단한다.
+    /// 락(Monitor)이 아니라 "큐 + 드레인 권한 하나"로 직렬화한다:
+    /// - Post는 작업을 큐에 넣고, 드레인 권한을 CAS로 따낸 스레드 하나만 큐를 비운다.
+    /// - 이미 다른 스레드가 드레인 중이면 큐에만 넣고 즉시 돌아온다 — 그 스레드가 이어서 처리해준다.
+    /// - 따라서 어느 시점에도 이 객체의 작업을 실행하는 스레드는 정확히 하나다.
+    ///
+    /// 이 자리는 Task 체인으로 만들었다가 두 번 갈아엎은 결과다.
+    /// (1) Interlocked.CompareExchange 재시도 루프 안에서 Task.ContinueWith를 투기적으로 불렀는데,
+    ///     ContinueWith는 호출하는 순간 등록이 확정되는 부작용이 있어서 실패하고 버려진 CAS 시도가
+    ///     걸어둔 continuation이 살아남아 체인과 무관하게 따로 실행됐다. Interlocked.Exchange로 고쳤다.
+    /// (2) 고치고 나서도 "각 작업의 완료가 다음 작업을 호출"하는 체인 구조 자체가 남았다. 그러면
+    ///     완료 콜백이 호출 스택에 큐 길이만큼 쌓이고(그래서 RunContinuationsAsynchronously가 필요했다),
+    ///     Post마다 TaskCompletionSource를 하나씩 할당해야 했다.
+    /// 지금의 드레인 루프는 재귀가 아니라 반복이라 스택이 늘지 않고, Post당 할당도 없다.
+    /// 덤으로 직렬화된 작업들이 스레드를 옮겨 다니지 않고 한 스레드에서 연속으로 처리된다.
     ///
     /// - Post: 지금 당장 처리해야 하는 작업.
     /// - Reserve: 지연이 필요한 작업. JHTimingWheel로 delayMs만큼 기다렸다가 Post를 호출한다 —
@@ -26,8 +32,10 @@ namespace ShopPurchase.Core.Thread
     {
         private readonly GUID m_key;
 
-        // null = 쉬고 있음. Interlocked.Exchange로만 갈아끼우는 lock-free 체인의 "현재 꼬리".
-        private Task m_currentTask;
+        private readonly ConcurrentQueue<Action> m_queue = new ConcurrentQueue<Action>();
+
+        // 0 = 아무도 처리하지 않는 중, 1 = 어떤 스레드가 큐를 비우는 중.
+        private int m_draining;
 
         protected JHSerializedObject(GUID _key)
         {
@@ -43,55 +51,36 @@ namespace ShopPurchase.Core.Thread
         /// <summary>이 객체에 대해 직렬화된 상태로 action을 처리한다 (규칙은 클래스 주석 참고).</summary>
         public void Post(Action _action)
         {
-            PostCore(() =>
+            m_queue.Enqueue(_action);
+
+            // 이미 다른 스레드가 드레인 중이면 그쪽이 방금 넣은 것까지 처리해준다. 작업 안에서 다시
+            // Post를 부르는 경우도 여기로 걸러지므로, 재진입이 스택을 쌓지 않는다.
+            if (Interlocked.CompareExchange(ref m_draining, 1, 0) != 0) return;
+
+            do
             {
-                try
-                {
-                    _action();
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[JHSerializedObject:{m_key}] Post에서 처리 안 된 예외: {ex}");
-                }
-            });
+                while (m_queue.TryDequeue(out var work)) RunWork(work);
+
+                // 큐를 비웠다고 선언한다. 이 직후에 들어온 항목은 넣은 쪽이 권한을 못 딴 채 돌아갔을
+                // 수 있으므로, 아래에서 큐를 한 번 더 확인하고 비어있지 않으면 권한을 다시 따낸다.
+                Interlocked.Exchange(ref m_draining, 0);
+            }
+            while (!m_queue.IsEmpty && Interlocked.CompareExchange(ref m_draining, 1, 0) == 0);
         }
 
-        /// <summary>직렬화 규칙을 실제로 구현하는 곳.</summary>
-        private void PostCore(Action _wrappedAction)
+        /// <summary>
+        /// 여기서 예외를 잡는 건 로그를 남기기 위해서만이 아니다 — 드레인 루프 밖으로 예외가 나가면
+        /// m_draining이 1로 걸린 채 남아서, 이 객체는 두 번 다시 아무 작업도 처리하지 못하게 된다.
+        /// </summary>
+        private void RunWork(Action _work)
         {
-            // TaskCompletionSource로 "이번 작업을 나타내는 Task"를 미리 만들어둔다 — 아직 시작 여부와
-            // 무관하게 m_currentTask에 먼저 꽂아넣을 수 있어야 하기 때문이다(직접 실행할지, 이전 작업
-            // 뒤에 이어붙일지는 아래에서 딱 한 번만 결정한다).
-            // RunContinuationsAsynchronously가 없으면 SetResult()를 부르는 스레드에서 다음 작업의
-            // ContinueWith 콜백이 동기적으로 바로 실행된다 — 같은 객체에 Post/Reserve가 길게 줄서
-            // 있으면 그 콜백들이 한 스레드의 호출 스택 위에 재귀적으로 쌓여버릴 수 있다. 이 옵션을
-            // 주면 각 콜백이 항상 ThreadPool로 새로 디스패치돼서 스택이 쌓이지 않는다.
-            var completionSource = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            Task newTask = completionSource.Task;
-
-            void RunAndComplete()
+            try
             {
-                try
-                {
-                    _wrappedAction();
-                }
-                finally
-                {
-                    completionSource.SetResult();
-                }
+                _work();
             }
-
-            // Exchange는 무조건 성공하는 스왑이라 재시도가 없다 — "실패한 시도가 남기는 부작용" 문제가
-            // 아예 생기지 않는다. previous는 이 스왑 직전까지 m_currentTask였던 값을 그대로 돌려준다.
-            Task previous = Interlocked.Exchange(ref m_currentTask, newTask);
-
-            if (previous == null || previous.IsCompleted)
+            catch (Exception ex)
             {
-                RunAndComplete();
-            }
-            else
-            {
-                previous.ContinueWith(_ => RunAndComplete());
+                Console.WriteLine($"[JHSerializedObject:{m_key}] Post에서 처리 안 된 예외: {ex}");
             }
         }
     }

@@ -17,10 +17,9 @@
 내려야 하고, 그 답이 코드에 그대로 남습니다. 그리고 그 답이 실제로 맞는지는 눈으로 훑는 대신
 동시성 스트레스 테스트로 확인했습니다.
 
-정확히는 `Task`를 안 쓴 게 아니라, **`async`/`await` 상태머신을 쓰지 않고 `Task`를 완료 신호를
-담는 원시 자료구조로만** 씁니다(`JHSerializedObject`의 `TaskCompletionSource` + `ContinueWith`,
-`JHTimingWheel`의 `ThreadPool` 디스패치). 스케줄링과 직렬화 규칙은 직접 만들되, 그 밑의 스레드
-풀까지 새로 만들지는 않았습니다.
+비동기 결과 전달은 `JHJob<T>`가, 객체 직렬화는 `JHSerializedObject`의 드레인 루프가, 시간은
+`JHTimingWheel`이 담당합니다. 다만 실제 실행은 `ThreadPool`에 던집니다 — 스케줄링과 직렬화
+규칙은 직접 만들되 그 밑의 스레드 풀까지 새로 만드는 건 이 프로젝트의 범위가 아니라고 봤습니다.
 
 **`Core/`, `Core/Thread/`가 이 프로젝트의 진짜 핵심(동시성 엔진)이고, 나머지(`Network/`,
 `Platform/`, `DB/`, `Data/`, `Object/`, `PacketHandler/`)는 그 엔진을 실제로 돌려보기 위한
@@ -30,9 +29,9 @@
 
 시간이 없다면 이 4곳만 봐도 충분합니다:
 
-1. [`Core/Thread/JHSerializedObject.cs`의 `PostCore`(60번째 줄)](Core/Thread/JHSerializedObject.cs#L60) —
-   CAS 재시도 루프 + `ContinueWith` 조합이 왜 위험한지, `Interlocked.Exchange`로 어떻게
-   해결했는지
+1. [`Core/Thread/JHSerializedObject.cs`의 `Post`(52번째 줄)](Core/Thread/JHSerializedObject.cs#L52) —
+   락 없이 "큐 + 드레인 권한 하나"로 직렬화하는 방법. 클래스 주석에 `Task` 체인으로 만들었다가
+   두 번 갈아엎은 과정(겹쳐 실행되던 버그 → 스택이 쌓이던 구조)이 남아 있습니다
 2. [`Core/Thread/JHTimingWheel.cs`의 클래스 상단 주석](Core/Thread/JHTimingWheel.cs#L33) —
    lock-free로 만들었다가 되돌린 이유 (정합성 vs 성능 트레이드오프 판단)
 3. [`Core/JHGUIDGenerator.cs`의 `Next()`(75번째 줄)](Core/JHGUIDGenerator.cs#L75) —
@@ -83,7 +82,7 @@ PacketHandler_Shop.C2P_RequestShopBuy
 |---|---|
 | `JHJob<T>` | 커스텀 Promise. `Then`/`Catch` 체이닝, 실패는 `Exception`이 아니라 `EErrorCode`로 전파. |
 | `JHTimingWheel` | 모든 시뮬레이션 지연을 처리하는 tick 기반(10ms × 1024슬롯) 스케줄러. lock striping을 적용한 저수준 다중 key 락 프리미티브(`Schedule`)도 함께 제공. |
-| `JHSerializedObject` | "한 번에 하나씩, 순서대로" 처리가 필요한 객체(예: `Player`)의 기반 클래스 — `Monitor` 락이 아니라 `Interlocked.Exchange`로 `Task` 체인을 갈아끼우는 lock-free 방식. |
+| `JHSerializedObject` | "한 번에 하나씩, 순서대로" 처리가 필요한 객체(예: `Player`)의 기반 클래스 — `Monitor` 락이 아니라 큐 + CAS 드레인 권한으로 직렬화한다. 권한을 딴 스레드 하나가 큐를 끝까지 비운다. |
 | `JHGUIDGenerator` | Snowflake 방식의 64bit ID 생성기(Time/Sequence/Region/Server 비트 패킹), 의도적으로 lock 기반. |
 
 ## 읽어볼 만한 설계 결정들
@@ -109,13 +108,19 @@ PacketHandler_Shop.C2P_RequestShopBuy
   다시 조회하지 않고 이미 환산된 `RewardData`만 받아 트랜잭션 안에서 확정합니다 — "무엇을 줄지"는
   상품 정의가, "그걸 확정하는 일"은 DB 계층이 맡습니다.
 
-- **`JHSerializedObject`는 lock-free지만, 아무렇게나 만든 게 아닙니다.** 초기 버전은
+- **`JHSerializedObject`는 두 번 갈아엎고 나서야 지금 모양이 됐습니다.** 처음엔
   `Interlocked.CompareExchange` 재시도 루프 안에서 `Task.ContinueWith`를 투기적으로 호출했습니다.
-  `ContinueWith`는 호출하는 순간 바로 등록이 확정되는 부작용이 있어서, 실패하고 버려진 CAS
-  시도가 걸어둔 continuation이 그대로 살아남아 "진짜" 체인과 무관하게 따로 실행되는 문제(부하
-  상황에서 실제로 겹쳐 실행됨)가 있었습니다. `Interlocked.Exchange`(항상 성공하는 무조건적
-  스왑이라 재시도 자체가 없음)로 고쳤고, `JHSerializedObjectTest`(객체 4개 × 스레드 50개 ×
-  스레드당 250회, 총 5만 회)로 겹침이 0건임을 검증했습니다.
+  `ContinueWith`는 호출하는 순간 바로 등록이 확정되는 부작용이 있어서, 실패하고 버려진 CAS 시도가
+  걸어둔 continuation이 살아남아 "진짜" 체인과 무관하게 따로 실행됐습니다(부하 상황에서 실제로
+  겹쳐 실행됨). `Interlocked.Exchange`로 고쳤지만, **체인 구조 자체가 남긴 문제가 하나 더
+  있었습니다** — "각 작업의 완료가 다음 작업을 호출"하는 모양이라 완료 콜백이 큐 길이만큼 호출
+  스택에 쌓이고(그래서 `RunContinuationsAsynchronously`가 필요했습니다), `Post`마다
+  `TaskCompletionSource`를 하나씩 할당해야 했습니다.
+  결국 체인을 버리고 **큐 + 드레인 권한 하나**로 바꿨습니다. `Post`는 큐에 넣고, CAS로 권한을 딴
+  스레드 하나만 큐를 비웁니다. 재귀가 아니라 반복이라 스택이 늘지 않고, `Post`당 할당이 없으며,
+  직렬화된 작업들이 스레드를 옮겨 다니지 않고 한 스레드에서 연속 처리됩니다. `Task` 의존도 함께
+  사라졌습니다. `JHSerializedObjectTest`(객체 4개 × 스레드 50개 × 스레드당 250회, 총 5만 회)로
+  겹침 0건·유실 0건을 검증합니다.
 
 - **`JHTimingWheel`의 슬롯 저장소는 의도적으로 lock-free가 아니라 `List<T>` + lock입니다.**
   `ConcurrentQueue` 기반 lock-free 버전을 시도했다가 되돌렸습니다 — "지금 슬롯이 몇 번인지 읽는
@@ -136,8 +141,8 @@ PacketHandler_Shop.C2P_RequestShopBuy
 - **메모리는 DB의 캐시일 뿐, 절대 두 번째 진실의 원천이 아닙니다.** 보상을 계산하는 곳은 DB
   트랜잭션 하나뿐이고, `Player.ApplyDBItemContext`는 그 트랜잭션이 만들어낸 `RewardData`를
   그대로 적용만 합니다. 이 적용은 인라인이 아니라 새로 `_player.Post(...)`로 감싸서 실행되는데,
-  `Post`는 자신의 동기 코드 블록이 끝나는 순간까지만 플레이어의 직렬화 락을 쥐고 있고 그 밑의
-  비동기 체인이 도는 시간까지는 붙잡고 있지 않기 때문입니다 — DB 결과가 돌아올 때쯤엔 이미 다른
+  `Post`에 넘긴 작업은 그 동기 코드 블록이 끝나는 순간 드레인 권한을 놓고, 거기서 시작된 비동기
+  체인이 도는 시간까지 그 객체를 붙잡고 있지는 않기 때문입니다 — DB 결과가 돌아올 때쯤엔 이미 다른
   무언가가 이 플레이어의 메모리를 건드렸을 수 있어서, 보상은 항상 그 실행 시점의 "현재" 상태를
   기준으로 더해져야 합니다.
 
