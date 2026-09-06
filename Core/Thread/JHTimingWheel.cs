@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using ShopPurchase.Common;
 
 namespace ShopPurchase.Core.Thread
 {
@@ -21,6 +22,8 @@ namespace ShopPurchase.Core.Thread
     ///
     /// - ScheduleDelay: delayMs 뒤에 action을 그냥 실행한다. 직렬화가 필요하면 호출자가 알아서
     ///   해야 한다 (JHSerializedObject.Reserve가 자기 Post를 호출하는 식으로 쓴다).
+    /// - ScheduleJob: 위와 같지만 결과를 담을 JHJob을 대신 만들어 돌려준다. 잡을 pending 상태로
+    ///   만드는 코드를 호출부마다 흩어놓지 않고 여기로 모으기 위한 것이다 — 자세한 이유는 해당 주석 참고.
     /// - Schedule(keys 버전): 여러 key에 걸친 작업(예: 거래처럼 둘 이상의 PlayerKey를
     ///   동시에 건드리는 처리)을 위한 저수준 API로 남겨둔다. key-lock은 key마다 무한정 늘어나는
     ///   딕셔너리가 아니라 (CPU 코어 수 * LocksPerCore)개의 고정 크기 배열로 처음부터 전부
@@ -110,6 +113,43 @@ namespace ShopPurchase.Core.Thread
                 int targetSlot = (m_currentSlot + ticksAhead) % WheelSize;
                 m_delaySlots[targetSlot].Add(_action);
             }
+        }
+
+        /// <summary>
+        /// delayMs 뒤에 body를 실행하고, 그 결과로 채워질 잡을 돌려준다.
+        /// body는 반환하기 전에 잡을 settle시켜야 한다 — 예외로 죽든 분기 하나를 빠뜨리든 여기서
+        /// 대신 reject하므로, 이 경로로 만든 잡은 "아무도 끝내지 않은 채" 남을 수 없다.
+        ///
+        /// 잡을 만들어 pending 상태로 넘기는 코드를 호출부마다 두면, 새 시스템을 붙일 때마다
+        /// try/catch와 모든 분기의 settle을 사람이 기억해야 한다. 그래서 그 책임을 여기 한 곳으로
+        /// 모았다 — 호출부는 new JHJob도, return job도, try/catch도 쓰지 않는다.
+        /// 빠뜨린 settle은 body가 반환된 직후 동기적으로 잡히므로, 개발 중 첫 실행에 바로 드러난다.
+        /// </summary>
+        public JHJob<T> ScheduleJob<T>(int _delayMs, Action<JHJob<T>> _body)
+        {
+            var job = new JHJob<T>();
+
+            ScheduleDelay(_delayMs, () =>
+            {
+                try
+                {
+                    _body(job);
+
+                    if (job.State == JHJobState.Pending)
+                    {
+                        Console.WriteLine($"[JHTimingWheel] 버그: JHJob<{typeof(T).Name}> 본문이 " +
+                            "잡을 settle시키지 않고 반환했습니다. settle을 빠뜨린 분기가 있습니다.");
+                        job.Reject(EErrorCode.JobDropped);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[JHTimingWheel] 잡 본문에서 처리 안 된 예외: {ex}");
+                    job.Reject(EErrorCode.Exception);
+                }
+            });
+
+            return job;
         }
 
         /// <summary>delayMs 뒤에, keys가 매핑되는 락 슬롯을 전부 잠근 상태에서 action을 실행하도록 예약한다.</summary>

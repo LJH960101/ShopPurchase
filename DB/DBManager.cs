@@ -81,38 +81,38 @@ namespace ShopPurchase.DB
                 });
         }
 
-        /// <summary>DB 왕복 한 번을 흉내낸다 — 지연 뒤에 action을 실행한다.</summary>
-        private static void ScheduleCall(Action _action)
+        /// <summary>
+        /// DB 왕복 한 번을 흉내낸다 — 지연 뒤에 body를 실행한다.
+        /// 잡을 만들고 settle을 보장하는 일은 ScheduleJob이 맡으므로, 여기 아래의 SP들은
+        /// "성공이면 Resolve, 실패면 Reject"라는 결과만 적으면 된다.
+        /// </summary>
+        private static JHJob<T> ScheduleCall<T>(Action<JHJob<T>> _body)
         {
-            JHTimingWheel.Instance.ScheduleDelay(Random.Shared.Next(CallDelayMinMs, CallDelayMaxMs), _action);
+            return JHTimingWheel.Instance.ScheduleJob(Random.Shared.Next(CallDelayMinMs, CallDelayMaxMs), _body);
         }
 
         private JHJob<DBTransaction> BeginTran()
         {
-            var job = new JHJob<DBTransaction>();
-            ScheduleCall(() =>
+            return ScheduleCall<DBTransaction>(_job =>
             {
                 // 커넥션을 얻지 못하는 경우. 트랜잭션이 아직 없으므로 롤백할 대상도 없다.
                 if (Random.Shared.NextDouble() < ConnectionFailureRate)
                 {
-                    job.Reject(EErrorCode.DBConnectionFailed);
+                    _job.Reject(EErrorCode.DBConnectionFailed);
                     return;
                 }
 
-                job.Resolve(new DBTransaction(s_idGenerator.Next()));
+                _job.Resolve(new DBTransaction(s_idGenerator.Next()));
             });
-            return job;
         }
 
         private JHJob<DBTransaction> EndTran(DBTransaction _tran)
         {
-            var job = new JHJob<DBTransaction>();
-            ScheduleCall(() =>
+            return ScheduleCall<DBTransaction>(_job =>
             {
                 // 커밋. 실제 DB로 교체되면 여기서 진짜 COMMIT을 호출하게 된다.
-                job.Resolve(_tran);
+                _job.Resolve(_tran);
             });
-            return job;
         }
 
         /// <summary>
@@ -126,35 +126,31 @@ namespace ShopPurchase.DB
 
         private JHJob<ShopReceiptData> SP_InsertShopReceipt(DBTransaction _tran, GUID _playerGuid, string _receipt)
         {
-            var job = new JHJob<ShopReceiptData>();
-            ScheduleCall(() =>
+            return ScheduleCall<ShopReceiptData>(_job =>
             {
                 if (Random.Shared.NextDouble() < InsertFailureRate)
                 {
-                    job.Reject(EErrorCode.InsertReceiptFailed);
+                    _job.Reject(EErrorCode.InsertReceiptFailed);
                     return;
                 }
 
-                job.Resolve(new ShopReceiptData(s_idGenerator.Next(), _playerGuid, _receipt));
+                _job.Resolve(new ShopReceiptData(s_idGenerator.Next(), _playerGuid, _receipt));
             });
-            return job;
         }
 
         private JHJob<RewardData> SP_InsertItem(DBTransaction _tran, RewardData _reward)
         {
-            var job = new JHJob<RewardData>();
-            ScheduleCall(() =>
+            return ScheduleCall<RewardData>(_job =>
             {
                 if (Random.Shared.NextDouble() < UpdateFailureRate)
                 {
-                    job.Reject(EErrorCode.UpdateItemFailed);
+                    _job.Reject(EErrorCode.UpdateItemFailed);
                     return;
                 }
 
                 // 실제 SP라면 여기서 인벤토리 테이블에 _reward를 반영하고, 반영된 결과를 돌려준다.
-                job.Resolve(_reward);
+                _job.Resolve(_reward);
             });
-            return job;
         }
     }
 }

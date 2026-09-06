@@ -75,6 +75,12 @@ namespace ShopPurchase.Core.Thread
             }
         }
 
+        /// <summary>JHTimingWheel.ScheduleJob이 "본문이 잡을 settle시켰는지"를 확인하는 데 쓴다.</summary>
+        internal JHJobState State
+        {
+            get { lock (m_lock) return m_state; }
+        }
+
         public static JHJob<T> Resolved(T _value)
         {
             var job = new JHJob<T>();
