@@ -43,7 +43,10 @@ namespace ShopPurchase.Test
             for (int i = 0; i < ObjectCount; i++) targets[i] = new DummySerialized((GUID)i);
 
             int totalCalls = ObjectCount * ProducerThreadCount * CallsPerThread;
-            bool violationDetected = false;
+            // 여러 스레드가 쓰고 메인 스레드가 읽으므로 bool이 아니라 Interlocked로 다룬다.
+            // (CountdownEvent의 Signal/Wait만으로도 가시성은 보장되지만, 이 프로젝트에서 그 근거를
+            //  읽는 사람이 짚어내야 하는 코드를 남기는 건 손해다.)
+            int violationDetected = 0;
             var doneEvent = new CountdownEvent(totalCalls);
             var threads = new List<System.Threading.Thread>();
 
@@ -60,7 +63,8 @@ namespace ShopPurchase.Test
                         {
                             Action work = () =>
                             {
-                                if (Interlocked.Increment(ref busy[capturedObjIndex]) != 1) violationDetected = true;
+                                if (Interlocked.Increment(ref busy[capturedObjIndex]) != 1)
+                                    Interlocked.Exchange(ref violationDetected, 1);
                                 Thread.SpinWait(50); // 겹칠 여지를 넓히기 위한 아주 짧은 인위적 작업
                                 Interlocked.Decrement(ref busy[capturedObjIndex]);
                                 Interlocked.Increment(ref completedCounts[capturedObjIndex]);
@@ -93,7 +97,7 @@ namespace ShopPurchase.Test
             Console.WriteLine($"총 요청: {totalCalls}, 총 완료: {totalCompleted}, 경과: {stopwatch.ElapsedMilliseconds}ms");
             Console.WriteLine(!completedInTime
                 ? "FAIL: 제한 시간 안에 모든 작업이 끝나지 않음 (작업 유실/데드락 의심)"
-                : violationDetected
+                : Volatile.Read(ref violationDetected) != 0
                     ? "FAIL: 같은 객체에 대해 겹치는 실행이 발생함"
                     : totalCompleted != totalCalls
                         ? $"FAIL: 완료 개수 불일치 (기대 {totalCalls}, 실제 {totalCompleted})"

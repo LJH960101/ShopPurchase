@@ -4,7 +4,7 @@ using ShopPurchase.Common;
 
 namespace ShopPurchase.Core.Thread
 {
-    public enum JHJobState
+    internal enum JHJobState
     {
         Pending,
         Fulfilled,
@@ -29,11 +29,6 @@ namespace ShopPurchase.Core.Thread
         private EErrorCode m_error;
         private List<Action<T>> m_fulfilledCallbacks = new List<Action<T>>();
         private List<Action<EErrorCode>> m_rejectedCallbacks = new List<Action<EErrorCode>>();
-
-        public JHJobState State
-        {
-            get { lock (m_lock) return m_state; }
-        }
 
         public static JHJob<T> Resolved(T _value)
         {
