@@ -235,7 +235,7 @@ dotnet run
 [Send] P2C_ResultShopBuy(ErrorCode=ReceiptAlreadyInserted, Item=[null])     ← 검증 왕복 없이 즉시
 [3] Request: receipt=0000-1004, productId=1004 (위조 영수증 -> ReceiptVerifyFailed)
 [4] Request: receipt=1111-1002, productId=1004 (싼 상품 영수증으로 비싼 상품 요청 -> ReceiptProductMismatch + Kick)
-[Send] P2C_ResultShopBuy(ErrorCode=Success, Item=[Items=[ItemId=1000, Count=1], Currencies=[Gold=1000]])
+[Send] P2C_ResultShopBuy(ErrorCode=Success, Item=[...Gold=1000]], ReceiptRowId=...826725462529)
 [Send] P2C_ResultShopBuy(ErrorCode=ReceiptVerifyFailed, Item=[null])
 [Kick] reason=ReceiptProductMismatch
 [Kick] reason=DBConnectionFailed                                            ← 5% 확률 경로

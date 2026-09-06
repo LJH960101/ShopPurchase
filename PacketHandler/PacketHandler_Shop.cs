@@ -38,7 +38,8 @@ namespace ShopPurchase.PacketHandler
                     {
                         _player.ApplyDBItemContext(_result.AddItemDBData);
 
-                        var response = new P2C_ResultShopBuy(EErrorCode.Success, _result.AddItemDBData);
+                        var response = new P2C_ResultShopBuy(EErrorCode.Success, _result.AddItemDBData,
+                            _result.Receipt.ReceiptRowId);
                         _player.Send(response);
                     });
                 })

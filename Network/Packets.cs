@@ -14,16 +14,20 @@ namespace ShopPurchase.Network
         public EErrorCode ErrorCode { get; }
         public RewardData RewardData { get; }
 
-        public P2C_ResultShopBuy(EErrorCode _errorCode, RewardData _rewardData)
+        public GUID? ReceiptRowId { get; }
+
+        public P2C_ResultShopBuy(EErrorCode _errorCode, RewardData _rewardData, GUID? _receiptRowId = null)
         {
             ErrorCode = _errorCode;
             RewardData = _rewardData;
+            ReceiptRowId = _receiptRowId;
         }
 
         public override string ToString()
         {
             string rewardInfo = RewardData == null ? "null" : FormatRewardData(RewardData);
-            return $"P2C_ResultShopBuy(ErrorCode={ErrorCode}, Item=[{rewardInfo}])";
+            string receiptInfo = ReceiptRowId.HasValue ? $", ReceiptRowId={ReceiptRowId.Value}" : string.Empty;
+            return $"P2C_ResultShopBuy(ErrorCode={ErrorCode}, Item=[{rewardInfo}]{receiptInfo})";
         }
 
         private static string FormatRewardData(RewardData _rewardData)
