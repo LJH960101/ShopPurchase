@@ -114,7 +114,6 @@ namespace ShopPurchase.Core.Thread
             if (invokeNow) _callback(error);
         }
 
-        /// <summary>다음 비동기 단계로 체이닝한다. (HTTPManager / DBManager 호출 연결용)</summary>
         public JHJob<TNext> Then<TNext>(Func<T, JHJob<TNext>> _onFulfilled)
         {
             var next = new JHJob<TNext>();
@@ -136,7 +135,6 @@ namespace ShopPurchase.Core.Thread
             return next;
         }
 
-        /// <summary>값은 그대로 흘려보내면서 부가 처리(로그, Send 등)만 수행하는 단계.</summary>
         public JHJob<T> Then(Action<T> _onFulfilled)
         {
             var next = new JHJob<T>();

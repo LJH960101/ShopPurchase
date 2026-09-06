@@ -38,7 +38,6 @@ namespace ShopPurchase.Common
         }
     }
 
-    /// <summary>상점 영수증을 DB에 적립한 결과.</summary>
     public class ShopReceiptData
     {
         public GUID ReceiptRowId { get; }
@@ -51,7 +50,6 @@ namespace ShopPurchase.Common
         }
     }
 
-    /// <summary>DBManager.InsertShopReceipt가 트랜잭션을 마치고 돌려주는 결과값.</summary>
     public class InsertShopReceiptResult
     {
         public ShopReceiptData Receipt { get; }

@@ -62,7 +62,7 @@ namespace ShopPurchase.Core.Thread
         private readonly KeyLock[] m_keyLocks;
 
         /// <summary>슬롯 하나에 대응하는 원자적 bool 락. 0 = 비어있음, 1 = 누군가 잡고 있음.</summary>
-        private class KeyLock
+        private class KeyLock 
         {
             public int Locked;
         }
@@ -149,7 +149,6 @@ namespace ShopPurchase.Core.Thread
 
                 var (dueDelays, dueTasks) = DrainCurrentSlot();
 
-                // C# 5부터 foreach 변수는 반복마다 새 스코프라, 클로저 캡처용 임시 변수가 따로 필요 없다.
                 foreach (var action in dueDelays)
                 {
                     ThreadPool.QueueUserWorkItem(_ => RunDelayAction(action));

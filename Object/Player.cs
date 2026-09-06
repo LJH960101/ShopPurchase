@@ -11,8 +11,6 @@ namespace ShopPurchase.Object
         private readonly GUID m_guid;
         private readonly EPlatform m_platform;
 
-        // 서버 메모리에 올라온 인벤토리. DB가 진실이고 이건 그 사본이라, 여기 반영은 항상
-        // DB 트랜잭션이 확정한 값을 그대로 가져다 쓴다 — 메모리에서 다시 계산/랜덤을 굴리지 않는다.
         private long m_gold;
         private readonly List<ItemData> m_items = new List<ItemData>();
 
@@ -28,11 +26,6 @@ namespace ShopPurchase.Object
 
         public EPlatform GetPlatformType() => m_platform;
 
-        /// <summary>
-        /// DB 트랜잭션이 확정한 보상을 메모리에 반영한다. 반드시 이 객체의 Post 콜백 안에서
-        /// 호출돼야 한다 — 그래야 호출되는 시점의 "현재" 메모리 상태를 기준으로 더할 수 있고,
-        /// DB 작업이 도는 동안 다른 요청이 먼저 메모리를 바꿔놨어도 유실되지 않는다.
-        /// </summary>
         public void ApplyDBItemContext(RewardData _reward)
         {
             foreach (var currency in _reward.Currencies)
