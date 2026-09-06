@@ -37,8 +37,8 @@
    lock-free로 만들었다가 되돌린 이유 (정합성 vs 성능 트레이드오프 판단)
 3. [`Core/JHGUIDGenerator.cs`의 `Next()`(75번째 줄)](Core/JHGUIDGenerator.cs#L75) —
    Sequence를 왜 wraparound가 아니라 ms 전환 기준으로 리셋해야 하는지
-4. [`DB/DBManager.cs`의 `InsertShopReceipt`(56번째 줄)](DB/DBManager.cs#L56) —
-   왜 트랜잭션 전체가 "하나의 비동기 콜백"이어야 하는지
+4. [`DB/DBManager.cs`의 `InsertShopReceipt`(49번째 줄)](DB/DBManager.cs#L49) —
+   DB 호출 네 번을 `JHJob.Then`으로 잇고, 실패는 어느 단계에서 나든 `Catch` 한 곳에서 롤백하는 흐름
 
 **보너스: 테스트가 실제로 버그를 잡은 사례**
 
@@ -65,9 +65,9 @@ PacketHandler_Shop.C2P_RequestShopBuy
   │                         clientProductId)          + 영수증이 가리키는 상품과 대조
   │     └─ HTTPManager.Send(...)                     JHTimingWheel로 흉내낸 네트워크 왕복
   │
-  ├─ DBManager.InsertShopReceipt(...)                 하나의 원자적 트랜잭션: 중복 체크 →
-  │                                                    BeginTran → 영수증 등록 → 아이템
-  │                                                    지급 → EndTran
+  ├─ DBManager.InsertShopReceipt(...)                 비동기 홉 네 번을 Then으로 연결:
+  │                                                    BeginTran → 영수증 등록 → 아이템 지급
+  │                                                    → EndTran (실패 시 Catch에서 롤백)
   │
   └─ Player.ApplyDBItemContext(...)                   DB가 확정한 보상을 메모리에 반영,
                                                         항상 최신 상태 기준으로 적용되도록
@@ -125,11 +125,13 @@ PacketHandler_Shop.C2P_RequestShopBuy
   여기서 lock이 지키는 건 정수 하나 읽고 `List.Add` 하는 몇 나노초짜리 작업이라, 없앤다고 실질적인
   처리량 이득은 없고 정합성만 잃습니다.
 
-- **DB "트랜잭션"은 비동기 단계들의 체인이 아니라 하나의 원자적 예약 콜백입니다.**
-  `DBManager.InsertShopReceipt`는 중복 체크 → `BeginTran` → 영수증 등록 → 아이템 지급 →
-  `EndTran`을 하나의 `JHTimingWheel` 지연 콜백 안에서 전부 동기로 실행합니다. 이 단계들이 각자
-  따로 비동기 홉이었다면, 홉 사이의 틈에 다른 작업이 끼어들어 원래 all-or-nothing이어야 할
-  작업 중간을 침범할 수 있습니다.
+- **DB 호출은 하나하나가 비동기 홉이고, 원자성은 DB의 트랜잭션이 보장합니다.**
+  `BeginTran`/`SP_InsertShopReceipt`/`SP_InsertItem`/`EndTran`이 각자 자기 왕복 지연과 실패
+  확률을 가진 `JHJob`을 돌려주고, `InsertShopReceipt`는 그걸 `Then`으로 이어 붙입니다 — 실제 DB
+  드라이버도 호출마다 왕복이 생기므로 이쪽이 진짜 모습에 가깝습니다. 홉 사이에 다른 작업이
+  끼어들어도 all-or-nothing이 깨지지 않는 건 DB의 트랜잭션 격리가 보장하기 때문이지, 클라이언트가
+  중간에 양보하지 않아서가 아닙니다. 롤백은 체인 끝의 `Catch` 한 곳에서만 합니다 — `Catch`가
+  에러를 소비하지 않고 그대로 흘려보내는 성질 덕분에, 롤백을 하고도 실패는 호출자까지 전파됩니다.
 
 - **메모리는 DB의 캐시일 뿐, 절대 두 번째 진실의 원천이 아닙니다.** 보상을 계산하는 곳은 DB
   트랜잭션 하나뿐이고, `Player.ApplyDBItemContext`는 그 트랜잭션이 만들어낸 `RewardData`를
