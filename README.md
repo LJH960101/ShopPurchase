@@ -160,19 +160,6 @@ PacketHandler/         PacketHandler_Shop — 전체 흐름을 엮는 지점
 Test/                  동시성 스트레스 테스트 + 엔드투엔드 스모크 테스트
 ```
 
-## 코드 컨벤션
-
-C# 표준 대신 C++/언리얼 계열 게임 서버 컨벤션을 따르되, 접두사가 실제 의미와 어긋나지 않도록
-셋으로 갈라 씁니다. `m_`은 "멤버 필드"라는 뜻이라 `const`나 `static`에 붙이면 접두사가 거짓말을
-하게 되기 때문입니다.
-
-| 대상 | 표기 | 예 |
-|---|---|---|
-| 상수(`const`) | 접두사 없이 PascalCase | `WheelSize`, `MaxDrainRotations` |
-| `static` 필드 | `s_camelCase` | `s_idGenerator` |
-| 인스턴스 필드 | `m_camelCase` | `m_currentSlot`, `m_slotLock` |
-| 메서드 파라미터 | `_camelCase` | `_delayMs`, `_keys` |
-
 ## 알려진 한계
 
 포트폴리오/데모 목적의 프로젝트이며 프로덕션 코드가 아닙니다:
