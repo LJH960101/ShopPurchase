@@ -2,7 +2,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading.Tasks;
 using ShopPurchase.Core;
 
 namespace ShopPurchase.Test
@@ -22,7 +21,7 @@ namespace ShopPurchase.Test
             Console.WriteLine("=== GuidGeneratorTest: JHGUIDGenerator (서버 x 스레드 최대 속도) ===");
 
             var bag = new ConcurrentBag<GUID>();
-            var tasks = new List<Task>();
+            var threads = new List<System.Threading.Thread>();
 
             for (int serverIndex = 0; serverIndex < ServerCount; serverIndex++)
             {
@@ -31,17 +30,25 @@ namespace ShopPurchase.Test
 
                 for (int t = 0; t < ThreadsPerServer; t++)
                 {
-                    tasks.Add(Task.Run(() =>
+                    // 이 프로젝트는 Task를 쓰지 않으므로 스레드를 직접 만든다. 어차피 "대기 없이 최대
+                    // 속도로 몰아치는" 게 목적이라 풀에 맡기는 것보다 전용 스레드가 의도에 더 맞는다.
+                    var thread = new System.Threading.Thread(() =>
                     {
                         for (int i = 0; i < IdsPerThread; i++)
                         {
                             bag.Add(generator.Next());
                         }
-                    }));
+                    })
+                    {
+                        IsBackground = true,
+                    };
+                    threads.Add(thread);
                 }
             }
 
-            Task.WaitAll(tasks.ToArray());
+            foreach (var thread in threads) thread.Start();
+            foreach (var thread in threads) thread.Join();
+
             int duplicateCount = GuidTestHelpers.PrintDuplicateStats(bag);
 
             var sample = bag.First();
