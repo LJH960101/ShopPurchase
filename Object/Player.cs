@@ -29,14 +29,8 @@ namespace ShopPurchase.Object
 
         public EPlatform GetPlatformType() => m_platform;
 
-        /// <summary>
-        /// 이 영수증을 이 플레이어가 처음 쓰는 것이면 선점하고 true. 이미 쓴 것이면 false.
-        /// 검증 왕복을 시작하기 전에 불러야 한다 — 응답을 기다리는 동안 같은 영수증으로 두 번째
-        /// 요청이 들어와도 그쪽이 여기서 막힌다.
-        /// </summary>
         public bool TryConsumeReceipt(string _receipt) => m_consumedReceipts.TryAdd(_receipt, 0);
 
-        /// <summary>실패해서 지급까지 못 갔을 때 선점을 되돌린다 — 안 그러면 재시도가 영영 막힌다.</summary>
         public void ReleaseReceipt(string _receipt) => m_consumedReceipts.TryRemove(_receipt, out _);
 
         public void ApplyDBItemContext(RewardData _reward)
@@ -67,6 +61,11 @@ namespace ShopPurchase.Object
 
         /// <summary>
         /// 실제 네트워크 전송(직렬화 + 소켓 송신) 대신 더미로 콘솔에만 출력한다.
+        ///
+        /// Send/Kick은 이 클래스에서 유일하게 Post 밖에서 불러도 되는 메서드다 — 플레이어의
+        /// 메모리 상태를 읽지도 쓰지도 않고, 실제 서버에서도 송신 큐는 세션이 자체적으로 잠그는
+        /// 게 보통이라 어느 스레드에서 불러도 안전하다고 본다. 그래서 응답만 보내면 되는
+        /// 실패 경로는 Post를 거치지 않고 곧바로 보낸다.
         /// </summary>
         public void Send(IPacket _packet)
         {

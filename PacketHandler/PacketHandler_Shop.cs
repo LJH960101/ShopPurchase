@@ -19,8 +19,6 @@ namespace ShopPurchase.PacketHandler
                 return;
             }
 
-            // 검증 왕복을 시작하기 전에 선점한다 — 왕복이 도는 동안 같은 영수증으로 두 번째 요청이
-            // 들어와도 여기서 막히고, 외부 호출도 시작하지 않는다.
             if (!_player.TryConsumeReceipt(_packet.Receipt))
             {
                 var response = new P2C_ResultShopBuy(EErrorCode.ReceiptAlreadyInserted, null);
@@ -32,17 +30,20 @@ namespace ShopPurchase.PacketHandler
                 .Then(_ => DBManager.Instance.InsertShopReceipt(_player.GetGUID(), _packet.Receipt, reward))
                 .Then(_result =>
                 {
+                    // Then 콜백은 잡을 완료시킨 스레드에서 돌기 때문에, 플레이어 메모리를 건드리는
+                    // ApplyDBItemContext는 여기서 바로 부르면 안 되고 Post로 다시 들어와야 한다.
+                    // Send는 직렬화가 필요 없지만 같은 블록에 두면 "메모리 반영이 끝난 뒤에 응답이
+                    // 나간다"는 순서까지 공짜로 보장된다.
                     _player.Post(() =>
                     {
                         _player.ApplyDBItemContext(_result.AddItemDBData);
-                    });
 
-                    var response = new P2C_ResultShopBuy(EErrorCode.Success, _result.AddItemDBData);
-                    _player.Send(response);
+                        var response = new P2C_ResultShopBuy(EErrorCode.Success, _result.AddItemDBData);
+                        _player.Send(response);
+                    });
                 })
                 .Catch(_errorCode =>
                 {
-                    // 선점은 여기 한 곳에서만 되돌린다 — 어느 단계에서 실패하든 Catch 하나로 모인다.
                     _player.ReleaseReceipt(_packet.Receipt);
 
                     if (_errorCode.IsOneOf(EErrorCode.ReceiptAlreadyInserted, EErrorCode.ReceiptVerifyFailed))
