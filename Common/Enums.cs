@@ -15,6 +15,7 @@ namespace ShopPurchase.Common
         InsertReceiptFailed,
         UpdateItemFailed,
         Exception,
+        JobDropped,
     }
 
     public enum EPlatform

@@ -30,6 +30,51 @@ namespace ShopPurchase.Core.Thread
         private List<Action<T>> m_fulfilledCallbacks = new List<Action<T>>();
         private List<Action<EErrorCode>> m_rejectedCallbacks = new List<Action<EErrorCode>>();
 
+        // Then/Catch가 만든 하류 잡인지. 하류 잡이 누락되는 건 상류가 누락된 결과일 뿐이라,
+        // 로그는 원인인 뿌리 잡에서만 남긴다 (안 그러면 사고 한 건에 체인 길이만큼 줄이 찍힌다).
+        private bool m_isDerived;
+
+        /// <summary>
+        /// settle되지 않은 채 수거된 잡을 실패로 마감한다.
+        ///
+        /// 진행 중인 잡은 그 잡을 끝낼 코드(예약된 콜백 등)가 클로저로 붙잡고 있어서 수거되지
+        /// 않는다. 그러니 여기 걸렸다는 건 "아직 안 끝났다"가 아니라 "끝낼 수 있는 코드가 이미
+        /// 사라졌다"는 뜻이고, 앞으로도 영원히 settle될 수 없다는 뜻이다 — 오탐이 없다.
+        ///
+        /// 로그만 남기지 않고 Reject까지 하는 이유는, 그래야 Catch가 불려서 핸들러가 잡아둔
+        /// 자원(영수증 선점 등)이 풀리기 때문이다. 이게 없으면 그 자원은 세션이 끝날 때까지
+        /// 잠긴 채로 남는다. 다만 GC 시점에 도는 것이라 언제 불릴지는 보장되지 않는다 —
+        /// 정확한 복구가 아니라 최선 노력이고, 진짜 해결은 잡을 만든 쪽이 모든 경로에서
+        /// settle시키는 것이다.
+        ///
+        /// 파이널라이저 밖으로 나간 예외는 어떤 catch로도 못 막고 프로세스를 즉사시키므로,
+        /// 여기서는 무슨 일이 있어도 예외를 밖으로 내보내지 않는다. 같은 이유로 이 경로에서
+        /// 불리는 Catch 핸들러는 블로킹하면 안 된다 — 파이널라이저 스레드는 프로세스에 하나뿐이라
+        /// 거기서 멈추면 모든 객체의 정리가 함께 멈춘다.
+        /// </summary>
+        ~JHJob()
+        {
+            try
+            {
+                if (m_state != JHJobState.Pending) return;
+
+                if (!m_isDerived)
+                {
+                    Console.WriteLine($"[JHJob] 누락: JHJob<{typeof(T).Name}>이 Resolve/Reject 없이 수거됐습니다. " +
+                        "이 타입을 만드는 곳이 모든 경로에서 settle시키는지 확인이 필요합니다.");
+                }
+
+                // 하류 잡도 reject는 해야 한다. 파이널라이즈 순서는 보장되지 않아서, 하류가 먼저
+                // 수거되면 상류의 전파를 기다릴 수 없기 때문이다. 어느 쪽이 먼저 오든 상태 검사에
+                // 걸려 Catch 핸들러는 정확히 한 번만 실행된다.
+                Reject(EErrorCode.JobDropped);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[JHJob] 파이널라이저에서 처리 안 된 예외: {ex}");
+            }
+        }
+
         public static JHJob<T> Resolved(T _value)
         {
             var job = new JHJob<T>();
@@ -57,6 +102,10 @@ namespace ShopPurchase.Core.Thread
                 m_rejectedCallbacks = null;
             }
 
+            // 정상적으로 끝난 잡은 파이널라이저가 할 일이 없다. 여기서 등록을 해제해야
+            // finalization 큐를 거치지 않아서, 누락된 잡만 그 비용을 낸다.
+            GC.SuppressFinalize(this);
+
             foreach (var callback in callbacks) callback(_value);
         }
 
@@ -72,6 +121,8 @@ namespace ShopPurchase.Core.Thread
                 m_fulfilledCallbacks = null;
                 m_rejectedCallbacks = null;
             }
+
+            GC.SuppressFinalize(this);
 
             foreach (var callback in callbacks) callback(_error);
         }
@@ -116,7 +167,7 @@ namespace ShopPurchase.Core.Thread
 
         public JHJob<TNext> Then<TNext>(Func<T, JHJob<TNext>> _onFulfilled)
         {
-            var next = new JHJob<TNext>();
+            var next = new JHJob<TNext> { m_isDerived = true };
             OnFulfilled(_value =>
             {
                 try
@@ -137,7 +188,7 @@ namespace ShopPurchase.Core.Thread
 
         public JHJob<T> Then(Action<T> _onFulfilled)
         {
-            var next = new JHJob<T>();
+            var next = new JHJob<T> { m_isDerived = true };
             OnFulfilled(_value =>
             {
                 try
@@ -158,7 +209,7 @@ namespace ShopPurchase.Core.Thread
         /// <summary>체인 어디에서 실패하든 여기서 EErrorCode 하나로 한 번에 받는다.</summary>
         public JHJob<T> Catch(Action<EErrorCode> _onRejected)
         {
-            var next = new JHJob<T>();
+            var next = new JHJob<T> { m_isDerived = true };
             OnFulfilled(next.Resolve);
             OnRejected(_error =>
             {
