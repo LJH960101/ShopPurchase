@@ -1,59 +1,72 @@
 # ShopPurchase
 
-`async`/`await` 대신 직접 만든 작은 비동기/동시성 엔진을 설계하고 검증하기 위한 도구로, 게임
-서버 스타일의 **인앱 상점 구매 파이프라인**을 C#(.NET 8)으로 구현한 프로젝트입니다.
-
+게임 서버 스타일의 **인앱 상점 구매 파이프라인**을 C#(.NET 8)으로 구현한 프로젝트입니다.
 흐름: **영수증 검증(플랫폼별 전략 + 상품 대조) → DB 트랜잭션(영수증 등록 + 아이템 지급) →
-메모리 반영 → 응답**, 이 전체를 직접 만든 tick 기반 타이밍 휠이 구동합니다.
+메모리 반영 → 응답.**
 
-## 왜 직접 만들었나
+## 이 프로젝트가 답하려는 질문
 
-**실무 코드라면 당연히 `Task`/`async`-`await`를 씁니다.** 직접 만든 쪽이 더 낫다고 주장하려는
-프로젝트가 아닙니다. 목적은 하나입니다 — **코드 스타일과 설계 판단을 보여주는 것.**
+**"내가 서버 구조를 짠다면, 핸들러의 비즈니스 로직을 어떻게 구성할 것인가."**
 
-그런데 `await` 세 줄로 끝나는 코드에는 보여줄 판단이 남지 않습니다. Promise를 직접 만들면
-"실패를 예외로 볼 것인가 값으로 볼 것인가", 스케줄러를 직접 만들면 "정합성과 lock-free 중
-무엇을 포기할 것인가", ID 생성기를 직접 만들면 "시계가 뒤로 흐르면 어떻게 할 것인가"에 답을
-내려야 하고, 그 답이 코드에 그대로 남습니다. 그리고 그 답이 실제로 맞는지는 눈으로 훑는 대신
-동시성 스트레스 테스트로 확인했습니다.
+게임 서버에서 요청 하나는 검증 → DB → 메모리 반영처럼 여러 번의 비동기 왕복을 거칩니다. 그
+왕복이 도는 동안 같은 플레이어에게 다른 요청이 또 들어옵니다. 그래서 **병렬성과 직렬화를 동시에**
+만족시켜야 합니다 — 서버 전체는 코어 수만큼 병렬로 돌되, 한 플레이어의 상태는 한 번에 한
+곳에서만 바뀌어야 합니다.
 
-비동기 결과 전달은 `JHJob<T>`가, 객체 직렬화는 `JHSerializedObject`의 드레인 루프가, 시간은
-`JHTimingWheel`이 담당합니다. 다만 실제 실행은 `ThreadPool`에 던집니다 — 스케줄링과 직렬화
-규칙은 직접 만들되 그 밑의 스레드 풀까지 새로 만드는 건 이 프로젝트의 범위가 아니라고 봤습니다.
+선택지는 크게 둘이었습니다.
 
-`Task`와 `async`/`await`는 **외부 드라이버를 감싸는 경계 한 곳([`HTTP/HTTPManager.cs`](HTTP/HTTPManager.cs))
-에만** 있습니다. 실제 `HttpClient`나 DB 드라이버는 `Task`만 돌려주므로 그 경계에서는 피할 수 없고,
-피하는 게 목적도 아닙니다 — 중요한 건 **어디까지 들어오게 둘 것인가**입니다. 그래서 `await`도
-예외도 그 어댑터 안에서 끝나고, 위쪽 코드는 `JHJob`과 `EErrorCode`만 봅니다. 예외를 에러 코드로
-바꾸는 지점도 코드 전체에서 그 한 곳뿐입니다.
+**Tick 기반.** 프레임마다 쌓인 큐를 한 번에 처리합니다. 그 안에서는 사실상 단일 스레드라
+**코드 난이도가 확 낮아집니다** — 락을 고민할 일이 거의 없고 실행 순서도 자명합니다. 대신 처리
+시간이 tick 예산을 넘는 순간 전체가 밀리고, 무거운 요청 하나가 아무 상관 없는 플레이어까지 같이
+세웁니다. **부하에 취약합니다.**
 
-**`Core/`, `Core/Thread/`가 이 프로젝트의 진짜 핵심(동시성 엔진)이고, 나머지(`Network/`,
-`Platform/`, `DB/`, `Data/`, `Object/`, `PacketHandler/`)는 그 엔진을 실제로 돌려보기 위한
-최소한의 배선입니다.**
+**Actor 기반.** 잠금 단위를 플레이어(액터) 하나로 좁히고 실행은 스레드 풀에 맡깁니다. 한 액터가
+느려도 다른 액터는 영향을 받지 않아 부하에 강합니다. 대신 요청 하나가 여러 스레드에 걸쳐 조각나서
+**프로파일링이 어려워집니다** — tick처럼 "이번 프레임에 몇 ms" 하고 잘라 볼 수가 없습니다.
+
+**Actor 쪽을 골랐습니다.** 프로파일링 난이도는 추적 ID와 도구로 보완할 수 있지만, tick 예산
+초과는 구조를 바꾸지 않는 한 못 피한다고 봤기 때문입니다. 그래서 이 프로젝트는
+
+- **병렬성**을 작업 단위(`JHJob`)를 `ThreadPool`이 실행하는 것으로 얻고,
+- **직렬화**를 액터 단위(`JHSerializedObject`)로 잠가서 얻습니다.
+
+액터는 `Player` 하나만을 뜻하지 않습니다. `Zone`, `Monster`, 길드처럼 **"한 번에 하나씩 바뀌어야
+하는 것"이면 전부 액터**이고, 각자 자기 큐를 들고 서로 독립적으로 돌아갑니다. 잠금 단위가 곧
+경합 단위이므로, 액터를 잘게 쪼갤수록 병렬성이 올라갑니다.
+
+문제는 **둘 이상을 동시에 건드려야 하는 처리**입니다 — 플레이어 간 거래, 존 이동(떠나는 존 +
+들어가는 존), 파티 전체에 대한 보상 지급. 하나씩 순서대로 잠그면 A→B와 B→A가 맞물려 데드락이
+납니다. 그래서 [`JHTimingWheel.Schedule(keys)`](Core/Thread/JHTimingWheel.cs#L116)로 **여러 키를
+한 번에 잠그는 경로**를 따로 뒀습니다. 락은 키마다 무한정 늘어나는 딕셔너리가 아니라 고정 크기
+배열(lock striping)이고, 잠글 때는 항상 정렬된 슬롯 인덱스 순서로만 획득합니다 — 획득 순서가
+전역적으로 일관되면 순환 대기 자체가 성립하지 않습니다.
+
+이번 구매 흐름은 건드리는 액터가 `Player` 하나뿐이라 이 경로를 쓰지 않습니다. 다중 액터 잠금은
+`MultiKeyScheduleTest`에서만 돌려보는 저수준 프리미티브로 남겨뒀습니다.
+
+[`PacketHandler/PacketHandler_Shop.cs`](PacketHandler/PacketHandler_Shop.cs)가 이 구성으로 짠
+비즈니스 로직이 실제로 어떻게 읽히는지를 보여주는 예제입니다.
+
+`JHJob`/`JHSerializedObject`/`JHTimingWheel`은 `Task`를 안 쓰려고가 아니라 **액터와 맞물리게
+하려고** 직접 만들었습니다. 갈림길은 "액터를 언제 놓느냐"였습니다 — 요청이 끝날 때까지 잡고
+있으면 추론은 쉽지만 DB 왕복 내내 그 액터는 아무 요청도 못 받습니다. **동기 블록이 끝나는 순간
+놓는 쪽**을 골랐고, 대가로 왕복 사이에 상태가 바뀝니다. `Then`은 액터 밖에서 돌고 상태를
+만지려면 `Post`로 다시 들어와야 한다는 규칙이 그 대가를 코드에 드러냅니다 — `await`로 감싸면
+바로 그 지점이 사라집니다. 긴 흐름이 `await`보다 읽기 나쁜 건 감수했습니다.
+
+`Task`와 `async`/`await`는 외부 드라이버 경계 한 곳([`HTTP/HTTPManager.cs`](HTTP/HTTPManager.cs))에만
+두고, 그 위쪽은 `JHJob`과 `EErrorCode`만 봅니다.
 
 ## 핵심만 빠르게 보려면
 
-시간이 없다면 이 4곳만 봐도 충분합니다:
-
-1. [`Core/Thread/JHSerializedObject.cs`의 `Post`(52번째 줄)](Core/Thread/JHSerializedObject.cs#L52) —
-   락 없이 "큐 + 드레인 권한 하나"로 직렬화하는 방법. 클래스 주석에 `Task` 체인으로 만들었다가
-   두 번 갈아엎은 과정(겹쳐 실행되던 버그 → 스택이 쌓이던 구조)이 남아 있습니다
-2. [`Core/Thread/JHTimingWheel.cs`의 클래스 상단 주석](Core/Thread/JHTimingWheel.cs#L33) —
-   lock-free로 만들었다가 되돌린 이유 (정합성 vs 성능 트레이드오프 판단)
-3. [`Core/JHGUIDGenerator.cs`의 `Next()`(75번째 줄)](Core/JHGUIDGenerator.cs#L75) —
-   Sequence를 왜 wraparound가 아니라 ms 전환 기준으로 리셋해야 하는지
-4. [`DB/DBManager.cs`의 `InsertShopReceipt`(49번째 줄)](DB/DBManager.cs#L49) —
-   DB 호출 네 번을 `JHJob.Then`으로 잇고, 실패는 어느 단계에서 나든 `Catch` 한 곳에서 롤백하는 흐름
-
-**보너스: 테스트가 실제로 버그를 잡은 사례**
-
-- [`Test/JHSerializedObjectTest.cs`](Test/JHSerializedObjectTest.cs) — 위 1번의 CAS +
-  `ContinueWith` 버그를 실제로 잡아낸 스트레스 테스트(객체 4개 × 스레드 50개 × 스레드당 250회,
-  총 5만 회).
-- [`Test/MultiKeyScheduleTest.cs`](Test/MultiKeyScheduleTest.cs) — `JHTimingWheel`의 다중 key
-  락(lock striping)에서, 진짜 상호 배제를 보장 못 하던 예전의 허술한 "한 번만 실행" 가드를
-  잡아낸 테스트. 이 다중 key API는 실제 구매 흐름에서는 쓰이지 않고 테스트에서만 돌려보는
-  저수준 프리미티브입니다.
+1. [`JHSerializedObject.Post`](Core/Thread/JHSerializedObject.cs#L52) — 락 없이 "큐 + 드레인 권한
+   하나"로 액터를 직렬화하는 방법. 두 번 갈아엎은 과정이 클래스 주석에 남아 있습니다
+2. [`JHTimingWheel` 클래스 주석](Core/Thread/JHTimingWheel.cs#L33) — lock-free로 만들었다가
+   되돌린 이유
+3. [`JHGUIDGenerator.Next()`](Core/JHGUIDGenerator.cs#L75) — Sequence를 왜 wraparound가 아니라
+   ms 전환 기준으로 리셋해야 하는지
+4. [`DBManager.InsertShopReceipt`](DB/DBManager.cs#L49) — DB 호출 네 번을 `Then`으로 잇고, 실패는
+   어디서 나든 `Catch` 한 곳에서 롤백하는 흐름
 
 ## 아키텍처
 
@@ -82,210 +95,86 @@ PacketHandler_Shop.C2P_RequestShopBuy
   클라이언트 잘못이면 실패 응답, 그 밖이면 Kick
 ```
 
-핵심 엔진 (`Core/`, `Core/Thread/`):
-
 | 타입 | 역할 |
 |---|---|
 | `JHJob<T>` | 커스텀 Promise. `Then`/`Catch` 체이닝, 실패는 `Exception`이 아니라 `EErrorCode`로 전파. |
-| `JHTimingWheel` | 모든 시뮬레이션 지연을 처리하는 tick 기반(10ms × 1024슬롯) 스케줄러. lock striping을 적용한 저수준 다중 key 락 프리미티브(`Schedule`)도 함께 제공. |
-| `JHSerializedObject` | "한 번에 하나씩, 순서대로" 처리가 필요한 객체(예: `Player`)의 기반 클래스 — `Monitor` 락이 아니라 큐 + CAS 드레인 권한으로 직렬화한다. 권한을 딴 스레드 하나가 큐를 끝까지 비운다. |
+| `JHSerializedObject` | 액터 기반 클래스(예: `Player`). `Monitor` 락이 아니라 큐 + CAS 드레인 권한으로 직렬화하고, 권한을 딴 스레드 하나가 큐를 끝까지 비운다. |
+| `JHTimingWheel` | tick 기반(10ms × 1024슬롯) 지연 스케줄러. 여러 액터를 동시에 잠가야 하는 처리(거래 등)를 위한 다중 key 락 프리미티브(lock striping + 정렬 순서 획득)도 함께 제공. |
 | `JHGUIDGenerator` | Snowflake 방식의 64bit ID 생성기(Time/Sequence/Region/Server 비트 패킹), 의도적으로 lock 기반. |
 
 ## 읽어볼 만한 설계 결정들
 
-- **예외 대신 `EErrorCode`.** `JHJob<T>`의 reject 채널은 `EErrorCode` 값을 직접 실어 나릅니다.
-  잘못된 영수증, 중복 영수증, DB 실패 같은 것들은 예외적인 상황이 아니라 일상적으로 예상되는
-  실패라서, `.Catch(errorCode => ...)`처럼 예외 타입을 검사하지 않고 값 하나로 분기합니다.
+- **액터 직렬화는 두 번 갈아엎고 나서야 지금 모양이 됐습니다.** 처음엔
+  `Interlocked.CompareExchange` 재시도 루프 안에서 `Task.ContinueWith`를 투기적으로 호출했는데,
+  `ContinueWith`는 호출하는 순간 등록이 확정되는 부작용이 있어 실패하고 버려진 CAS 시도의
+  continuation이 살아남아 따로 실행됐습니다(부하 상황에서 실제로 겹쳐 실행됨). 고치고 나서도
+  "각 작업의 완료가 다음 작업을 호출"하는 체인 구조가 남아, 완료 콜백이 큐 길이만큼 스택에 쌓이고
+  `Post`마다 `TaskCompletionSource`를 할당해야 했습니다. 결국 체인을 버리고 **큐 + 드레인 권한
+  하나**로 바꿨습니다 — 재귀가 아니라 반복이라 스택이 늘지 않고, `Post`당 할당이 없으며, 직렬화된
+  작업이 스레드를 옮겨 다니지 않고 한 스레드에서 연속 처리됩니다. 겹침·유실 0건은 객체 4개에
+  스레드 50개를 몰아 5만 회를 두들기는 테스트로 확인했고, 이 테스트가 위의 겹쳐 실행 버그를
+  실제로 잡아냈습니다.
 
-- **`Task`는 없애는 게 아니라 경계에 가둡니다.** 실제 `HttpClient`나 DB 드라이버는 `Task`만
-  돌려주므로, 외부 드라이버를 감싸는 계층에서 `async`/`await`를 피하는 건 가능하지도 바람직하지도
-  않습니다. 대신 [`HTTPManager.SendAsync`](HTTP/HTTPManager.cs)가 `await`로 결과를 받아 `JHJob`으로
-  옮겨 담는 어댑터 역할을 하고, 그 위쪽 코드는 `Task`를 전혀 보지 않습니다. 예외를 `EErrorCode`로
-  바꾸는 지점도 코드 전체에서 여기 하나뿐이라, 실패 변환 규칙이 여기저기 흩어지지 않습니다.
-  여기서 `Resolve`를 `try` 블록 **밖**에 두는 것이 중요합니다 — `Resolve`는 등록된 `Then` 콜백을
-  그 자리에서 전부 실행하므로, `try` 안에 두면 다운스트림 핸들러의 예외까지 이 `catch`가 잡고,
-  그때는 이미 `Fulfilled` 상태라 뒤이은 `Reject`가 무시되어 실패가 조용히 사라집니다.
+- **`JHTimingWheel`의 슬롯 저장소는 의도적으로 lock-free가 아니라 `List<T>` + lock입니다.**
+  `ConcurrentQueue` 기반으로 만들었다가 되돌렸습니다 — "지금 슬롯이 몇 번인지 읽는 것"과 "그
+  슬롯을 비우고 다음으로 전진하는 것"이 하나의 원자적 연산이어야 하는데, 그렇지 않으면 프로듀서가
+  방금 바꿔치기된 슬롯에 추가해버리고 그 작업은 아무도 다시 보지 않는 고아 큐에서 영구 유실됩니다.
+  여기서 lock이 지키는 건 정수 하나 읽고 `List.Add` 하는 작업이라, 없앤다고 얻는 처리량은 없고
+  정합성만 잃습니다.
+
+- **끝나지 않은 잡은 수거될 때 실패로 마감합니다.** 잡을 만든 코드가 settle을 빠뜨리면 — 예외로
+  죽든 분기 하나를 놓치든 — `Then`도 `Catch`도 불리지 않고 체인이 조용히 멈춥니다. 실패가 실패로
+  보고조차 되지 않는, 가장 찾기 힘든 형태입니다. 그런데 **진행 중인 잡은 그걸 끝낼 코드가 붙잡고
+  있어서 수거되지 않으므로, "Pending인 채로 수거됐다"는 곧 "영원히 끝날 수 없다"와 같은 말입니다**
+  — 오탐이 원리적으로 없습니다. 그래서 파이널라이저에서 `JobDropped`로 reject합니다. GC 시점이라
+  타이밍은 보장되지 않는 최선 노력이며, 진짜 해결은 잡을 만든 쪽이 모든 경로에서 settle시키는
+  것입니다.
 
 - **영수증 검증은 "유효한가"와 "무엇에 대한 것인가"를 따로 묻습니다.** 인앱 결제에서 가장 흔한
   구멍은 영수증 자체는 진짜인데 **클라이언트가 보낸 상품 ID를 그대로 믿는 것**입니다 — 싼 상품을
-  결제한 진짜 영수증으로 비싼 상품을 받아갈 수 있습니다. 그래서 `IPlatform` 구현체는 "이 영수증은
-  어떤 상품의 것인가"(`VerifiedReceipt`)까지만 답하고, 그 상품이 요청한 상품과 맞는지 대조하는
-  책임은 `PlatformManager.Verify`가 가져갑니다. 대조를 호출자(`PacketHandler`)에 맡기지 않은
-  이유는 단순합니다 — 그 검사를 빠뜨려도 흐름은 아무 일 없다는 듯 성공하기 때문에, "기억해서 해야
-  하는 검사"로 두면 언젠가 빠집니다. 검증을 부르려면 기대 상품 ID를 반드시 같이 넘기게 만들어서
-  빠뜨릴 수 없는 자리로 옮겼고, 불일치는 정상 클라이언트라면 나올 수 없는 요청이므로 실패 응답이
-  아니라 `Kick`으로 처리합니다(`BuyTest`의 마지막 케이스).
+  결제한 진짜 영수증으로 비싼 상품을 받아갈 수 있습니다. 그래서 `IPlatform`은 "이 영수증이 어떤
+  상품의 것인가"까지만 답하고, 요청 상품과의 대조는 `PlatformManager.Verify`가 가져갑니다.
+  호출자에게 맡기지 않은 이유는, **그 검사를 빠뜨려도 흐름이 멀쩡히 성공하기 때문**입니다 —
+  기억해서 해야 하는 검사는 언젠가 빠집니다. 검증을 부르려면 기대 상품 ID를 반드시 같이 넘기게
+  만들어서 빠뜨릴 수 없는 자리로 옮겼습니다.
 
-- **지급할 보상은 외부 호출 이전에 확정합니다.** 핸들러 첫 줄에서
-  `GetProduct(productId)?.GetReward()` 한 줄로 "없는 상품"과 "지급할 게 없는 잘못된 상품 정의"를
-  같이 걸러내고, 통과하지 못하면 플랫폼 검증 왕복조차 시작하지 않습니다. 검증을 통과했다는 건
-  영수증의 상품과 이 상품이 같다는 뜻이므로(다르면 위에서 끊깁니다), `DBManager`는 상품 테이블을
-  다시 조회하지 않고 이미 환산된 `RewardData`만 받아 트랜잭션 안에서 확정합니다 — "무엇을 줄지"는
-  상품 정의가, "그걸 확정하는 일"은 DB 계층이 맡습니다.
-
-- **`JHSerializedObject`는 두 번 갈아엎고 나서야 지금 모양이 됐습니다.** 처음엔
-  `Interlocked.CompareExchange` 재시도 루프 안에서 `Task.ContinueWith`를 투기적으로 호출했습니다.
-  `ContinueWith`는 호출하는 순간 바로 등록이 확정되는 부작용이 있어서, 실패하고 버려진 CAS 시도가
-  걸어둔 continuation이 살아남아 "진짜" 체인과 무관하게 따로 실행됐습니다(부하 상황에서 실제로
-  겹쳐 실행됨). `Interlocked.Exchange`로 고쳤지만, **체인 구조 자체가 남긴 문제가 하나 더
-  있었습니다** — "각 작업의 완료가 다음 작업을 호출"하는 모양이라 완료 콜백이 큐 길이만큼 호출
-  스택에 쌓이고(그래서 `RunContinuationsAsynchronously`가 필요했습니다), `Post`마다
-  `TaskCompletionSource`를 하나씩 할당해야 했습니다.
-  결국 체인을 버리고 **큐 + 드레인 권한 하나**로 바꿨습니다. `Post`는 큐에 넣고, CAS로 권한을 딴
-  스레드 하나만 큐를 비웁니다. 재귀가 아니라 반복이라 스택이 늘지 않고, `Post`당 할당이 없으며,
-  직렬화된 작업들이 스레드를 옮겨 다니지 않고 한 스레드에서 연속 처리됩니다. `Task` 의존도 함께
-  사라졌습니다. `JHSerializedObjectTest`(객체 4개 × 스레드 50개 × 스레드당 250회, 총 5만 회)로
-  겹침 0건·유실 0건을 검증합니다.
-
-- **`JHTimingWheel`의 슬롯 저장소는 의도적으로 lock-free가 아니라 `List<T>` + lock입니다.**
-  `ConcurrentQueue` 기반 lock-free 버전을 시도했다가 되돌렸습니다 — "지금 슬롯이 몇 번인지 읽는
-  것"과 "그 슬롯을 비우고 다음 슬롯으로 전진하는 것"이 하나의 원자적 연산이어야 하는데, 그렇지
-  않으면 프로듀서가 방금 바꿔치기된 슬롯에 그대로 추가해버릴 수 있고, 그 항목은 아무도 다시
-  들여다보지 않는 고아 큐 객체 안에 남아 조용히 영구 유실될 수 있습니다(그냥 지연되는 게 아니라).
-  여기서 lock이 지키는 건 정수 하나 읽고 `List.Add` 하는 몇 나노초짜리 작업이라, 없앤다고 실질적인
-  처리량 이득은 없고 정합성만 잃습니다.
-
-- **DB 호출은 하나하나가 비동기 홉이고, 원자성은 DB의 트랜잭션이 보장합니다.**
-  `BeginTran`/`SP_InsertShopReceipt`/`SP_InsertItem`/`EndTran`이 각자 자기 왕복 지연과 실패
-  확률을 가진 `JHJob`을 돌려주고, `InsertShopReceipt`는 그걸 `Then`으로 이어 붙입니다 — 실제 DB
-  드라이버도 호출마다 왕복이 생기므로 이쪽이 진짜 모습에 가깝습니다. 홉 사이에 다른 작업이
-  끼어들어도 all-or-nothing이 깨지지 않는 건 DB의 트랜잭션 격리가 보장하기 때문이지, 클라이언트가
-  중간에 양보하지 않아서가 아닙니다. 롤백은 체인 끝의 `Catch` 한 곳에서만 합니다 — `Catch`가
-  에러를 소비하지 않고 그대로 흘려보내는 성질 덕분에, 롤백을 하고도 실패는 호출자까지 전파됩니다.
-
-- **메모리는 DB의 캐시일 뿐, 절대 두 번째 진실의 원천이 아닙니다.** 보상을 계산하는 곳은 DB
-  트랜잭션 하나뿐이고, `Player.ApplyDBItemContext`는 그 트랜잭션이 만들어낸 `RewardData`를
-  그대로 적용만 합니다. 이 적용은 인라인이 아니라 새로 `_player.Post(...)`로 감싸서 실행되는데,
-  `Post`에 넘긴 작업은 그 동기 코드 블록이 끝나는 순간 드레인 권한을 놓고, 거기서 시작된 비동기
-  체인이 도는 시간까지 그 객체를 붙잡고 있지는 않기 때문입니다 — DB 결과가 돌아올 때쯤엔 이미 다른
-  무언가가 이 플레이어의 메모리를 건드렸을 수 있어서, 보상은 항상 그 실행 시점의 "현재" 상태를
-  기준으로 더해져야 합니다.
-
-- **`DBManager`는 전역 싱글턴이지만, 영수증 중복 판정은 `Player`가 들고 있습니다.** 실제 DB는
-  플레이어 개인이 아니라 서버 전체가 공유하는 자원이라 `DBManager`는 싱글턴입니다. 반면 "이
-  영수증을 이 플레이어가 이미 썼는가"는 저장 로직이 아니라 그 플레이어에 대한 판단이라
-  `Player.TryConsumeReceipt`가 갖습니다(`ConcurrentDictionary`로 판정과 등록을 한 번의 원자적
-  연산으로 끝냅니다). 선점은 핸들러가 플랫폼 검증 왕복보다 **먼저** 하고, 체인이 실패하면 그
-  체인의 유일한 `Catch`가 `ReleaseReceipt`로 되돌립니다 — 선점과 해제가 코드에 정확히 한 곳씩만
-  존재하도록 배치한 것입니다.
+- **보상을 계산하는 곳은 DB 트랜잭션 하나뿐입니다.** `Player.ApplyDBItemContext`는 DB가 확정한
+  `RewardData`를 적용만 하고 메모리에서 다시 계산하지 않습니다 — 두 곳에서 계산하면 값이
+  어긋나는 순간 어느 쪽이 맞는지 판정할 방법이 없습니다.
 
 ## 프로젝트 구조
 
 ```
 Core/                  JHGUIDGenerator
-Core/Thread/           JHJob, JHTimingWheel, JHSerializedObject
-Common/                EErrorCode/EPlatform/ECurrencyType, 공용 데이터 타입, GUID 타입 별칭
+Core/Thread/           JHJob, JHSerializedObject, JHTimingWheel     ← 이 프로젝트의 핵심
+Common/                EErrorCode/EPlatform, 공용 데이터 타입, GUID 타입 별칭
 Network/               패킷 정의 (C2P_RequestShopBuy / P2C_ResultShopBuy)
 Platform/              IPlatform 전략 + Google/Apple/Steam + 리플렉션 기반 자동 등록
 HTTP/                  흉내낸 HTTP 왕복 — Task/async-await가 존재하는 유일한 경계
 Data/                  상품 테이블 (더미)
 DB/                    DBManager (더미, 트랜잭션 기반)
-Object/                Player
+Object/                Player — 액터
 PacketHandler/         PacketHandler_Shop — 전체 흐름을 엮는 지점
-Test/                  스트레스 테스트 + 엔드투엔드 스모크 테스트 (아래 참고)
+Test/                  동시성 스트레스 테스트 + 엔드투엔드 스모크 테스트
 ```
 
 ## 코드 컨벤션
 
-C# 표준(`_camelCase` 필드, 프로퍼티) 대신 C++/언리얼 계열 게임 서버 컨벤션을 따랐습니다.
-다만 접두사가 실제 의미와 어긋나지 않도록 세 가지로 갈라 씁니다.
+C# 표준 대신 C++/언리얼 계열 게임 서버 컨벤션을 따르되, 접두사가 실제 의미와 어긋나지 않도록
+셋으로 갈라 씁니다. `m_`은 "멤버 필드"라는 뜻이라 `const`나 `static`에 붙이면 접두사가 거짓말을
+하게 되기 때문입니다.
 
 | 대상 | 표기 | 예 |
 |---|---|---|
 | 상수(`const`) | 접두사 없이 PascalCase | `WheelSize`, `MaxDrainRotations` |
-| `static` 필드 | `s_camelCase` | `s_idGenerator`, `s_consumedReceipts` |
+| `static` 필드 | `s_camelCase` | `s_idGenerator` |
 | 인스턴스 필드 | `m_camelCase` | `m_currentSlot`, `m_slotLock` |
 | 메서드 파라미터 | `_camelCase` | `_delayMs`, `_keys` |
-
-`m_`은 "멤버 필드"라는 뜻이라 컴파일 타임 상수나 static에 붙이면 접두사가 거짓말을 하게 됩니다.
-그래서 상수는 접두사를 떼고, static은 `s_`로 구분했습니다.
-
-## 실행 방법
-
-```bash
-dotnet build
-dotnet run
-```
-
-`Program.cs`가 아래 테스트를 순서대로 전부 실행합니다. 별도 테스트 프레임워크는 쓰지 않고,
-각 테스트가 스스로 판정해서 `PASS` 또는 `FAIL` 한 줄을 출력합니다 — 숫자를 읽는 사람이 해석해야
-하는 자리는 없습니다. `BuyTest`만은 판정 대상이 아니라 전체 흐름을 눈으로 보는 데모입니다.
-
-## 테스트
-
-| 테스트 | 무엇을 증명하는가 |
-|---|---|
-| `BuyTest` | 엔드투엔드 스모크 테스트: 플레이어 한 명이 5건(정상 2건 + 같은 영수증 재사용 + 위조 영수증 + 상품 변조)을 보내 성공/이미 등록됨/검증 실패/상품 불일치 경로를 확인. 영수증 중복 판정이 `Player` 단위라 한 명이 보내야 재사용이 잡히고, 플레이어의 플랫폼은 생성자에서 고정되므로 실제로 타는 검증 경로는 `GooglePlay` 하나입니다(Apple/Steam 구현체는 리플렉션으로 등록만 됩니다). 상품 변조 건은 매 실행마다 반드시 `Kick`으로 끊깁니다. DB 실패로 인한 `Kick`은 실패율(단계별 5%)이 걸려야 나오는 확률적 경로라 별개입니다. |
-| `GuidGeneratorTest` | "서버" 5개 × 스레드 8개 × 대기 없이 최대 속도로 5000개씩 ID 생성, 충돌 0건 기대. |
-| `BulkGrantTest` | 호출 패턴에 따라 Sequence 대기가 어떻게 달라지는지 실측 — 한 스레드 tight loop와 `JHTimingWheel` 유저별 Job 분산을 같은 생성기로 나란히 돌립니다. 중복은 양쪽 다 0건이며, 확인하려는 건 "정확성은 어떤 패턴에서도 지켜지고 대가는 충돌이 아니라 대기 시간으로 나타난다"는 성질입니다. |
-| `MultiKeyScheduleTest` | 두 단계로 검증: (1) 다중 key 작업 하나가 정확히 한 번만 실행되는지, (2) 무작위 다중 key 작업 300개로 key를 공유하는 작업끼리 절대 겹치지 않는지(예전에 진짜 상호 배제를 보장 못 하던 "한 번만 실행" 가드의 버그를 잡아낸 테스트). |
-| `JHSerializedObjectTest` | 객체 4개 × 스레드 50개 × 스레드당 `Post`/`Reserve` 무작위 250회(총 5만 회): 겹치는 실행 0건, 유실된 작업 0건(위에서 설명한 CAS + `ContinueWith` 버그를 잡아낸 테스트). |
-| `ShutdownDrainTest` | `JHTimingWheel.Stop()`이 남은 예약을 버리지 않는지 검증. 1~9초 뒤에 실행될 작업 250건을 깔아두고 기다리지 않고 바로 `Stop()`을 부릅니다 — 지연을 길게 잡아야 평소 tick 경로가 미리 집어가지 않아서, 세는 실행이 전부 종료 드레인이 건져낸 것임이 보장됩니다. 그중 20건은 드레인 도중에 다시 예약을 걸어, 이미 지나친 슬롯에 떨어진 재예약도 살아남는지 함께 확인합니다(휠이 한 바퀴로 끝내지 않고 반복하는 이유). 실제로 그 반복을 한 바퀴로 되돌리면 매 실행 `FAIL`합니다 — 270건 중 7~11건이 유실됐습니다. |
-
-### 실행 예시
-
-`dotnet run`을 실제로 돌렸을 때 나오는 출력 일부(발췌, 타임스탬프/GUID 일부 생략):
-
-```
-=== BuyTest: 상점 구매 5회 실행 ===
-플레이어: ...145555969 (platform=GooglePlay)
-[0] Request: receipt=1111-1000, productId=1000 (정상 구매)
-[1] Request: receipt=1111-1001, productId=1001 (정상 구매)
-[2] Request: receipt=1111-1000, productId=1000 (같은 영수증 재사용 -> ReceiptAlreadyInserted)
-[Send] P2C_ResultShopBuy(ErrorCode=ReceiptAlreadyInserted, Item=[null])     ← 검증 왕복 없이 즉시
-[3] Request: receipt=0000-1004, productId=1004 (위조 영수증 -> ReceiptVerifyFailed)
-[4] Request: receipt=1111-1002, productId=1004 (싼 상품 영수증으로 비싼 상품 요청 -> ReceiptProductMismatch + Kick)
-[Send] P2C_ResultShopBuy(ErrorCode=Success, Item=[...Gold=1000]], ReceiptRowId=...826725462529)
-[Send] P2C_ResultShopBuy(ErrorCode=ReceiptVerifyFailed, Item=[null])
-[Kick] reason=ReceiptProductMismatch
-[Kick] reason=DBConnectionFailed                                            ← 5% 확률 경로
-=== BuyTest 완료 ===
-
-=== GuidGeneratorTest: JHGUIDGenerator (서버 x 스레드 최대 속도) ===
-생성 개수: 200000, 유일 개수: 200000, 중복 개수: 0 (0.00%)
-PASS: 서버 5개 × 스레드 8개 × 5000개 생성, 충돌 0건
-
-=== BulkGrantTest: 한 스레드에서 tight loop로 직접 호출 ===
-생성 개수: 30000, 유일 개수: 30000, 중복 개수: 0 (0.00%)
-실제 경과 시간: 406.90ms, 실제로 쓰인 서로 다른 Time 값 개수: 30
-PASS: 30000개 생성, 충돌 0건
-=== BulkGrantTest: JHTimingWheel로 유저별 Job 분산 ===
-생성 개수: 30000, 유일 개수: 30000, 중복 개수: 0 (0.00%)
-실제 경과 시간: 543.25ms, 실제로 쓰인 서로 다른 Time 값 개수: 40
-PASS: 30000개 생성, 충돌 0건
-
-=== MultiKeyScheduleTest: 다중 key 단일 실행 검증 ===
-PASS: 다중 key 작업이 정확히 한 번 실행됨
-
-=== MultiKeyScheduleTest: 겹치는 key 동시 실행 방지 검증 ===
-PASS: 300개 작업 모두 겹치는 key끼리 동시 실행되지 않음
-
-=== JHSerializedObjectTest: Post/Reserve 직렬화 극한 검증 ===
-총 요청: 50000, 총 완료: 50000, 경과: 61ms
-PASS: 극한 경합 상황에서도 직렬화 유지, 작업 유실 없음
-
-=== ShutdownDrainTest: 종료 시 예약 작업 드레인 검증 ===
-예약 270건 (지연 200 + 다중 key 50 + 드레인 중 재예약 20), 실행 270건
-PASS: 종료 드레인이 예약 작업 270건을 하나도 버리지 않음
-```
-
-`BulkGrantTest`의 두 숫자(407ms vs 543ms)는 어느 쪽이 낫다는 뜻이 아닙니다. 스케줄러를 거치는
-쪽이 tick 지연과 `ThreadPool` 디스패치 비용 때문에 오히려 더 걸립니다. 여기서 볼 것은 **중복이
-양쪽 다 0건**이라는 점입니다 — 30,000개를 한 스레드에서 30개 ms에 몰아넣든, 여러 스레드에 걸쳐
-40개 ms로 퍼뜨리든 생성기는 유일성을 지킵니다. lock 기반으로 만든 대가는 충돌이 아니라 대기
-시간으로 나타나고, 그래서 "GUID 발급은 느려도 된다"는 판단이 성립합니다.
 
 ## 알려진 한계
 
 포트폴리오/데모 목적의 프로젝트이며 프로덕션 코드가 아닙니다:
 
-- `DBManager`와 `HTTPManager`는 전부 더미(랜덤 지연 + 실패율)이며, 실제 DB나 네트워크 호출은
-  전혀 없습니다.
-- 영수증 검증도 진짜 서명 검증이 아니라 `"{플랫폼 토큰}-{상품 ID}"` 형식의 문자열 비교입니다.
-  실제 구현이라면 이 자리에 Google Play Developer API / App Store Server API 호출과 서명 검증이
-  들어가지만, "영수증에서 상품 ID를 읽어 요청 상품과 대조한다"는 흐름은 동일합니다.
-- 영수증 중복 판정이 `Player` 단위라, **같은 영수증 문자열을 다른 계정이 다시 쓰는 것은 막지
-  못합니다.** 실제 서비스라면 검증 응답에 담긴 구매 계정을 요청자와 대조하거나, 소비된 영수증을
-  DB의 유니크 제약으로 전역 관리해야 합니다.
-- `Player`가 들고 있는 소비 영수증 집합은 무한정 커집니다 — 실제 구현이라면 DB가 맡을 부분입니다.
-- 실제 패킷 직렬화(`IPacket`은 빈 마커 인터페이스)나 실제 소켓 계층은 없습니다.
+- `DBManager`와 `HTTPManager`는 더미(랜덤 지연 + 실패율)이고, 실제 DB나 네트워크 호출은 없습니다.
+  영수증 검증도 서명 검증이 아니라 `"{플랫폼 토큰}-{상품 ID}"` 형식의 문자열 비교입니다.
+- 실제 패킷 직렬화(`IPacket`은 빈 마커 인터페이스)나 소켓 계층은 없습니다.
