@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using ShopPurchase.Common;
 
 namespace ShopPurchase.Core.Thread
@@ -22,6 +24,8 @@ namespace ShopPurchase.Core.Thread
     ///
     /// - ScheduleDelay: delayMs 뒤에 action을 그냥 실행한다. 직렬화가 필요하면 호출자가 알아서
     ///   해야 한다 (JHSerializedObject.Reserve가 자기 Post를 호출하는 식으로 쓴다).
+    ///   슬롯 배열 한 바퀴(MaxWheelDelayMs)를 넘는 예약은 휠에 바로 넣을 수 없어서, 그만큼
+    ///   줄어들 때까지 기다렸다가 넘긴다 — ArmAfterLongWait 참고.
     /// - ScheduleJob: 위와 같지만 결과를 담을 JHJob을 대신 만들어 돌려준다. 잡을 pending 상태로
     ///   만드는 코드를 호출부마다 흩어놓지 않고 여기로 모으기 위한 것이다 — 자세한 이유는 해당 주석 참고.
     /// - Schedule(keys 버전): 여러 key에 걸친 작업(예: 거래처럼 둘 이상의 PlayerKey를
@@ -39,6 +43,12 @@ namespace ShopPurchase.Core.Thread
 
         private const int TickIntervalMs = 10;
         private const int WheelSize = 1024; // 10ms * 1024 = 약 10.24초까지 한 바퀴 안에 스케줄 가능
+
+        // 휠 한 바퀴로 표현할 수 있는 최대 지연(약 10.2초). 이보다 긴 예약은 슬롯에 바로 넣을 수 없다.
+        private const int MaxWheelDelayMs = (WheelSize - 1) * TickIntervalMs;
+
+        // 휠 범위를 넘는 예약을 잘라서 기다릴 때 한 조각의 길이. 조각이 끝날 때마다 남은 시간을 남긴다.
+        private const int LongDelayChunkMs = 60 * 60 * 1000;
 
         // key-lock 슬롯 개수 = CPU 코어 수 * 이 배수. Schedule(keys 버전)에서만 쓰인다.
         private const int LocksPerCore = 4;
@@ -107,6 +117,12 @@ namespace ShopPurchase.Core.Thread
         /// </summary>
         public void ScheduleDelay(int _delayMs, Action _action)
         {
+            if (_delayMs > MaxWheelDelayMs)
+            {
+                _ = ArmAfterLongWait(_delayMs, _remainingMs => ScheduleDelay(_remainingMs, _action));
+                return;
+            }
+
             int ticksAhead = ComputeTicksAhead(_delayMs);
             lock (m_slotLock)
             {
@@ -158,6 +174,12 @@ namespace ShopPurchase.Core.Thread
             if (_keys == null || _keys.Length == 0)
                 throw new ArgumentException("최소 하나 이상의 key가 필요합니다.", nameof(_keys));
 
+            if (_delayMs > MaxWheelDelayMs)
+            {
+                _ = ArmAfterLongWait(_delayMs, _remainingMs => Schedule(_remainingMs, _keys, _action));
+                return;
+            }
+
             // key가 아니라 "실제로 잠글 슬롯 인덱스" 기준으로 중복 제거 + 정렬한다. 서로 다른 key가
             // 같은 슬롯으로 충돌할 수 있는데, 그걸 그대로 두면 같은 락을 두 번 잠그려다 자기 자신을
             // 기다리며 멈추는 자기 데드락이 생긴다.
@@ -171,11 +193,48 @@ namespace ShopPurchase.Core.Thread
             }
         }
 
+        /// <summary>
+        /// 휠 범위(MaxWheelDelayMs)를 넘는 예약을 처리한다. 남은 시간을 LongDelayChunkMs 단위로 잘라
+        /// 기다리다가 휠에 넣을 수 있는 길이가 되면, 그 남은 시간으로 arm을 호출해 휠에 넘긴다.
+        ///
+        /// 휠은 슬롯 배열 한 바퀴까지만 표현할 수 있다. 그보다 긴 예약을 한 바퀴로 클램프하면
+        /// 한 시간 뒤에 실행돼야 할 작업이 10초 만에 실행된다 — 지연이 아니라 오작동이다.
+        /// 긴 대기는 10ms 단위 정밀도가 필요 없으므로, 휠을 계층화하는 대신 Task.Delay에 맡기고
+        /// 휠 범위 안으로 들어온 뒤부터만 휠이 담당한다.
+        /// </summary>
+        private static async Task ArmAfterLongWait(int _delayMs, Action<int> _arm)
+        {
+            int remainingMs = _delayMs;
+
+            try
+            {
+                while (remainingMs > MaxWheelDelayMs)
+                {
+                    // 마지막 조각이 끝나면 남은 시간이 정확히 휠 범위 안으로 들어오도록 자른다.
+                    int chunkMs = Math.Min(remainingMs - MaxWheelDelayMs, LongDelayChunkMs);
+                    await Task.Delay(chunkMs);
+                    remainingMs -= chunkMs;
+
+                    Console.WriteLine($"[JHTimingWheel][Debug] 장기 예약 대기 중 — 남은 시간 {remainingMs}ms");
+                }
+
+                _arm(remainingMs);
+            }
+            catch (Exception ex)
+            {
+                // 이 Task는 아무도 관측하지 않는다. 여기서 안 잡으면 예약이 통째로 조용히 사라진다.
+                Console.WriteLine($"[JHTimingWheel] 장기 예약 처리 중 처리 안 된 예외: {ex}");
+            }
+        }
+
         private int ComputeTicksAhead(int _delayMs)
         {
             int delayMs = _delayMs < 0 ? 0 : _delayMs;
             int ticksAhead = delayMs / TickIntervalMs;
-            if (ticksAhead >= WheelSize) ticksAhead = WheelSize - 1; // 포트폴리오 범위이므로 단일 랩으로 클램프
+
+            // 여기까지 오는 지연은 이미 휠 범위 안이다 — 긴 예약은 ArmAfterLongWait이 걸러낸다.
+            // 남겨둔 클램프는 그 전제가 깨졌을 때 엉뚱한 슬롯을 덮어쓰지 않게 하는 방어선이다.
+            if (ticksAhead >= WheelSize) ticksAhead = WheelSize - 1;
             return ticksAhead;
         }
 
@@ -183,20 +242,39 @@ namespace ShopPurchase.Core.Thread
 
         private void TickLoop()
         {
+            // Thread.Sleep은 요청한 시간보다 오래 잔다 — Windows 기본 타이머 해상도가 15.625ms라
+            // Sleep(10)이 실제로는 약 15.6ms다. 깰 때마다 슬롯을 하나씩만 전진시키면 휠의 시계가
+            // 실제 시간보다 1.5배 넘게 느리게 흘러서, 1초 예약이 1.56초에, 10초 예약이 16초에
+            // 실행된다(실측). 그래서 슬롯을 "몇 번 깼는지"가 아니라 "실제로 몇 ms가 지났는지"에
+            // 맞춰 전진시키고, 밀린 만큼은 한 번에 따라잡는다.
+            var clock = Stopwatch.StartNew();
+            long processedTicks = 0;
+
             while (!m_stopRequested)
             {
                 System.Threading.Thread.Sleep(TickIntervalMs);
 
-                var (dueDelays, dueTasks) = DrainCurrentSlot();
+                long elapsedTicks = clock.ElapsedMilliseconds / TickIntervalMs;
+                long behindTicks = elapsedTicks - processedTicks;
+                processedTicks = elapsedTicks;
 
-                foreach (var action in dueDelays)
-                {
-                    ThreadPool.QueueUserWorkItem(_ => RunDelayAction(action));
-                }
+                // 프로세스가 길게 멈췄다 깨어난 경우(VM 일시정지, GC 정지 등) 밀린 틱이 한 바퀴를
+                // 넘을 수 있다. 한 바퀴만 돌면 모든 슬롯을 한 번씩 보게 되므로 그 이상은 의미가 없다.
+                if (behindTicks > WheelSize) behindTicks = WheelSize;
 
-                foreach (var task in dueTasks)
+                for (long tick = 0; tick < behindTicks && !m_stopRequested; tick++)
                 {
-                    ThreadPool.QueueUserWorkItem(_ => RunWithKeyLocks(task));
+                    var (dueDelays, dueTasks) = DrainCurrentSlot();
+
+                    foreach (var action in dueDelays)
+                    {
+                        ThreadPool.QueueUserWorkItem(_ => RunDelayAction(action));
+                    }
+
+                    foreach (var task in dueTasks)
+                    {
+                        ThreadPool.QueueUserWorkItem(_ => RunWithKeyLocks(task));
+                    }
                 }
             }
 

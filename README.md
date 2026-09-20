@@ -36,7 +36,7 @@
 
 문제는 **둘 이상을 동시에 건드려야 하는 처리**입니다 — 플레이어 간 거래, 존 이동(떠나는 존 +
 들어가는 존), 파티 전체에 대한 보상 지급. 하나씩 순서대로 잠그면 A→B와 B→A가 맞물려 데드락이
-납니다. 그래서 [`JHTimingWheel.Schedule(keys)`](Core/Thread/JHTimingWheel.cs#L116)로 **여러 키를
+납니다. 그래서 [`JHTimingWheel.Schedule(keys)`](Core/Thread/JHTimingWheel.cs#L172)로 **여러 키를
 한 번에 잠그는 경로**를 따로 뒀습니다. 락은 키마다 무한정 늘어나는 딕셔너리가 아니라 고정 크기
 배열(lock striping)이고, 잠글 때는 항상 정렬된 슬롯 인덱스 순서로만 획득합니다 — 획득 순서가
 전역적으로 일관되면 순환 대기 자체가 성립하지 않습니다.
@@ -54,14 +54,16 @@
 만지려면 `Post`로 다시 들어와야 한다는 규칙이 그 대가를 코드에 드러냅니다 — `await`로 감싸면
 바로 그 지점이 사라집니다. 긴 흐름이 `await`보다 읽기 나쁜 건 감수했습니다.
 
-`Task`와 `async`/`await`는 외부 드라이버 경계 한 곳([`HTTP/HTTPManager.cs`](HTTP/HTTPManager.cs))에만
-두고, 그 위쪽은 `JHJob`과 `EErrorCode`만 봅니다.
+`Task`와 `async`/`await`는 **가장 아래 두 곳에만** 둡니다 — 외부 드라이버를 감싸는
+[`HTTP/HTTPManager.cs`](HTTP/HTTPManager.cs), 그리고 휠 한 바퀴(약 10초)를 넘는 예약을 잘라
+기다리는 `JHTimingWheel`의 장기 예약 경로. 둘 다 시간과 IO를 직접 다루는 자리이고, 그 위쪽
+코드는 `JHJob`과 `EErrorCode`만 봅니다.
 
 ## 핵심만 빠르게 보려면
 
 1. [`JHSerializedObject.Post`](Core/Thread/JHSerializedObject.cs#L52) — 락 없이 "큐 + 드레인 권한
    하나"로 액터를 직렬화하는 방법. 두 번 갈아엎은 과정이 클래스 주석에 남아 있습니다
-2. [`JHTimingWheel` 클래스 주석](Core/Thread/JHTimingWheel.cs#L33) — lock-free로 만들었다가
+2. [`JHTimingWheel` 클래스 주석](Core/Thread/JHTimingWheel.cs#L40) — lock-free로 만들었다가
    되돌린 이유
 3. [`JHGUIDGenerator.Next()`](Core/JHGUIDGenerator.cs#L75) — Sequence를 왜 wraparound가 아니라
    ms 전환 기준으로 리셋해야 하는지
@@ -152,7 +154,7 @@ Core/Thread/           JHJob, JHSerializedObject, JHTimingWheel     ← 이 프�
 Common/                EErrorCode/EPlatform, 공용 데이터 타입, GUID 타입 별칭
 Network/               패킷 정의 (C2P_RequestShopBuy / P2C_ResultShopBuy)
 Platform/              IPlatform 전략 + Google/Apple/Steam + 리플렉션 기반 자동 등록
-HTTP/                  흉내낸 HTTP 왕복 — Task/async-await가 존재하는 유일한 경계
+HTTP/                  흉내낸 HTTP 왕복 — Task/async-await를 쓰는 두 경계 중 하나
 Data/                  상품 테이블 (더미)
 DB/                    DBManager (더미, 트랜잭션 기반)
 Object/                Player — 액터
